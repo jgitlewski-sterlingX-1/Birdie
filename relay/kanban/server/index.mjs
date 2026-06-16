@@ -2,6 +2,7 @@ import 'dotenv/config';
 import express from 'express';
 import cors from 'cors';
 import { google } from 'googleapis';
+import { v4 as uuidv4 } from 'uuid';
 
 const app = express();
 const PORT = process.env.RELAY_API_PORT || 8787;
@@ -22,8 +23,12 @@ const ALLOWED_DOMAINS = process.env.ALLOWED_DOMAINS
 const {
   GMAIL_CLIENT_ID,
   GMAIL_CLIENT_SECRET,
-  GMAIL_REDIRECT_URI = 'http://localhost:8787/api/integrations/gmail/callback',
+  GMAIL_REDIRECT_URI = 'http://localhost:8787/api/auth/callback',
+  FRONTEND_URL = 'http://localhost:5176',
 } = process.env;
+
+// Session storage (in-memory; production should use database/Redis)
+const sessions = new Map();
 
 const gmailState = {
   connected: false,
@@ -41,6 +46,107 @@ function getOAuthClient() {
   return new google.auth.OAuth2(GMAIL_CLIENT_ID, GMAIL_CLIENT_SECRET, GMAIL_REDIRECT_URI);
 }
 
+// Auth endpoints (login / logout / session)
+app.get('/api/auth/login', (_req, res) => {
+  const oauth2Client = getOAuthClient();
+  if (!oauth2Client) {
+    return res.status(400).json({
+      error: 'Missing OAuth environment variables. Set GMAIL_CLIENT_ID and GMAIL_CLIENT_SECRET.',
+    });
+  }
+
+  const authUrl = oauth2Client.generateAuthUrl({
+    access_type: 'offline',
+    prompt: 'consent',
+    scope: ['openid', 'email', 'profile'],
+  });
+
+  res.json({ authUrl });
+});
+
+app.get('/api/auth/callback', async (req, res) => {
+  const oauth2Client = getOAuthClient();
+  if (!oauth2Client) {
+    return res.status(400).send('Missing OAuth env vars.');
+  }
+
+  const code = req.query.code;
+  if (!code || typeof code !== 'string') {
+    return res.status(400).send('Missing OAuth code.');
+  }
+
+  try {
+    const { tokens } = await oauth2Client.getToken(code);
+    oauth2Client.setCredentials(tokens);
+
+    // Decode the ID token to get user info
+    const ticket = await oauth2Client.verifyIdToken({
+      idToken: tokens.id_token,
+      audience: GMAIL_CLIENT_ID,
+    });
+    const payload = ticket.getPayload();
+
+    const email = payload.email || '';
+    const name = payload.name || email.split('@')[0];
+    const emailDomain = email.split('@')[1];
+
+    // Validate domain
+    if (!emailDomain || !ALLOWED_DOMAINS.includes(emailDomain)) {
+      console.warn(`[Auth] Access denied for ${email}. Domain ${emailDomain} not in allowed list.`);
+      return res
+        .status(403)
+        .send(`Access denied. Your domain (${emailDomain}) is not authorized for Relay.`);
+    }
+
+    // Create session
+    const sessionId = uuidv4();
+    const session = {
+      id: sessionId,
+      user: {
+        id: payload.sub,
+        email,
+        name,
+        domain: emailDomain,
+      },
+      createdAt: new Date().toISOString(),
+      tokens,
+    };
+    sessions.set(sessionId, session);
+
+    console.log(`[Auth] Logged in: ${email} (domain: ${emailDomain})`);
+
+    // Redirect back to app with session ID in query params
+    return res.redirect(`${FRONTEND_URL}?sessionId=${sessionId}`);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Unknown OAuth error';
+    console.error(`[Auth] Callback error: ${message}`);
+    return res.status(500).send(`OAuth callback failed: ${message}`);
+  }
+});
+
+app.get('/api/auth/session', (req, res) => {
+  const sessionId = req.query.sessionId;
+  if (!sessionId || typeof sessionId !== 'string') {
+    return res.json({ authenticated: false, user: null });
+  }
+
+  const session = sessions.get(sessionId);
+  if (!session) {
+    return res.json({ authenticated: false, user: null });
+  }
+
+  res.json({ authenticated: true, sessionId, user: session.user });
+});
+
+app.post('/api/auth/logout', (req, res) => {
+  const { sessionId } = req.body;
+  if (sessionId) {
+    sessions.delete(sessionId);
+  }
+  res.json({ ok: true });
+});
+
+// Gmail integration endpoints (kept for "Connect Gmail" in Settings tab)
 app.get('/api/integrations', (_req, res) => {
   res.json({
     gmail: {
@@ -114,7 +220,7 @@ app.get('/api/integrations/gmail/callback', async (req, res) => {
 
     console.log(`[OAuth] Connected: ${accountEmail} (domain: ${emailDomain})`);
 
-    return res.redirect('http://localhost:5174?gmail=connected');
+    return res.redirect(`${FRONTEND_URL}?gmail=connected`);
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Unknown OAuth error';
     console.error(`[OAuth] Callback error: ${message}`);

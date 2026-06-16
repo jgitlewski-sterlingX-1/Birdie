@@ -9,15 +9,17 @@ import { Sidebar } from './components/Sidebar'
 import { HomePage } from './pages/HomePage'
 import { ProjectsPage } from './pages/ProjectsPage'
 import { SettingsPage } from './pages/SettingsPage'
+import { LoginPage } from './pages/LoginPage'
 import type { Card } from './types'
 
 type View = 'board' | 'projects' | 'settings'
 
-function AppShell() {
+function AuthenticatedShell() {
   const [view, setView] = useState<View>('board')
   const [activeCardId, setActiveCardId] = useState<string | null>(null)
 
   const { currentUser } = useSession()
+
   const boardStore = useBoard()
   const projectsStore = useProjects()
   const skillsStore = useSkills()
@@ -56,6 +58,16 @@ function AppShell() {
       </main>
     </div>
   )
+}
+
+function AppShell() {
+  const { authenticated } = useSession()
+
+  if (!authenticated) {
+    return <LoginPage />
+  }
+
+  return <AuthenticatedShell />
 }
 
 function App() {
