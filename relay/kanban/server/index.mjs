@@ -3,6 +3,7 @@ import express from 'express';
 import cors from 'cors';
 import { google } from 'googleapis';
 import { v4 as uuidv4 } from 'uuid';
+import mysql from 'mysql2/promise';
 
 const app = express();
 const PORT = process.env.RELAY_API_PORT || 8787;
@@ -26,15 +27,36 @@ const {
   GMAIL_REDIRECT_URI = 'http://localhost:8787/api/auth/callback',
   GMAIL_INTEGRATION_REDIRECT_URI = 'http://localhost:8787/api/integrations/gmail/callback',
   FRONTEND_URL = 'http://localhost:5176',
+  MYSQL_HOST,
+  MYSQL_PORT,
+  MYSQL_USER,
+  MYSQL_PASSWORD,
+  MYSQL_DATABASE = 'relay',
+  MYSQL_SOCKET_PATH,
 } = process.env;
 
 // Session storage (in-memory; production should use database/Redis)
 const sessions = new Map();
 const GMAIL_SCOPES = ['https://www.googleapis.com/auth/gmail.readonly', 'https://www.googleapis.com/auth/gmail.compose'];
-const AUTH_SCOPES = ['openid', 'email', 'profile'];
+const AUTH_SCOPES = ['openid', 'email', 'profile', ...GMAIL_SCOPES];
 
 const gmailAccounts = [];
 let defaultGmailAccountEmail = null;
+const seenMessageIdsByAccount = new Map();
+
+const dbPool =
+  MYSQL_USER && MYSQL_PASSWORD && (MYSQL_SOCKET_PATH || (MYSQL_HOST && MYSQL_PORT))
+    ? mysql.createPool({
+        ...(MYSQL_SOCKET_PATH
+          ? { socketPath: MYSQL_SOCKET_PATH }
+          : { host: MYSQL_HOST, port: Number(MYSQL_PORT) }),
+        user: MYSQL_USER,
+        password: MYSQL_PASSWORD,
+        database: MYSQL_DATABASE,
+        waitForConnections: true,
+        connectionLimit: 10,
+      })
+    : null;
 
 function upsertGmailAccount({
   accountEmail,
@@ -74,11 +96,119 @@ function getDefaultGmailAccount() {
   return gmailAccounts.find((account) => account.accountEmail === defaultGmailAccountEmail) ?? null;
 }
 
+function getSessionById(sessionId) {
+  if (!sessionId || typeof sessionId !== 'string') return null;
+  return sessions.get(sessionId) ?? null;
+}
+
+function getSessionFromRequest(req) {
+  const querySessionId = req.query?.sessionId;
+  const bodySessionId = req.body?.sessionId;
+  const sessionId =
+    typeof querySessionId === 'string'
+      ? querySessionId
+      : typeof bodySessionId === 'string'
+      ? bodySessionId
+      : null;
+
+  if (!sessionId) return null;
+  return getSessionById(sessionId);
+}
+
+function decodeBase64Url(input) {
+  if (!input || typeof input !== 'string') return '';
+  try {
+    const normalized = input.replace(/-/g, '+').replace(/_/g, '/');
+    return Buffer.from(normalized, 'base64').toString('utf8');
+  } catch {
+    return '';
+  }
+}
+
+function extractTextBody(payload) {
+  if (!payload) return '';
+
+  if (payload.mimeType === 'text/plain' && payload.body?.data) {
+    return decodeBase64Url(payload.body.data);
+  }
+
+  if (Array.isArray(payload.parts)) {
+    for (const part of payload.parts) {
+      const text = extractTextBody(part);
+      if (text.trim()) return text;
+    }
+  }
+
+  return payload.body?.data ? decodeBase64Url(payload.body.data) : '';
+}
+
+function getHeaderValue(headers, name) {
+  if (!Array.isArray(headers)) return '';
+  const match = headers.find((h) => h?.name?.toLowerCase() === name.toLowerCase());
+  return match?.value ?? '';
+}
+
+function isAllowedDomain(email) {
+  const domain = typeof email === 'string' ? email.split('@')[1] : null;
+  return !!domain && ALLOWED_DOMAINS.includes(domain);
+}
+
 function getOAuthClient(redirectUri = GMAIL_REDIRECT_URI) {
   if (!GMAIL_CLIENT_ID || !GMAIL_CLIENT_SECRET) {
     return null;
   }
   return new google.auth.OAuth2(GMAIL_CLIENT_ID, GMAIL_CLIENT_SECRET, redirectUri);
+}
+
+async function upsertUserRecord({ googleSub, email, name, domain }) {
+  if (!dbPool) {
+    return {
+      id: googleSub,
+      email,
+      name,
+      domain,
+    };
+  }
+
+  const [rows] = await dbPool.query(
+    'SELECT id, email, name, domain FROM users WHERE google_sub = ? LIMIT 1',
+    [googleSub]
+  );
+  const existing = rows?.[0];
+
+  if (existing) {
+    await dbPool.query(
+      `
+        UPDATE users
+        SET email = ?, name = ?, domain = ?, last_login_at = CURRENT_TIMESTAMP
+        WHERE id = ?
+      `,
+      [email, name, domain, existing.id]
+    );
+
+    return {
+      id: existing.id,
+      email,
+      name,
+      domain,
+    };
+  }
+
+  const userId = uuidv4();
+  await dbPool.query(
+    `
+      INSERT INTO users (id, google_sub, email, name, domain, last_login_at)
+      VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+    `,
+    [userId, googleSub, email, name, domain]
+  );
+
+  return {
+    id: userId,
+    email,
+    name,
+    domain,
+  };
 }
 
 // Auth endpoints (login / logout / session)
@@ -167,6 +297,7 @@ app.get('/api/auth/callback', async (req, res) => {
     const email = payload.email || '';
     const name = payload.name || email.split('@')[0];
     const emailDomain = email.split('@')[1];
+    const googleSub = payload.sub || '';
 
     // Validate domain
     if (!emailDomain || !ALLOWED_DOMAINS.includes(emailDomain)) {
@@ -176,15 +307,27 @@ app.get('/api/auth/callback', async (req, res) => {
         .send(`Access denied. Your domain (${emailDomain}) is not authorized for Relay.`);
     }
 
+    if (!googleSub) {
+      return res.status(500).send('OAuth callback failed: Missing Google subject identifier.');
+    }
+
+    const appUser = await upsertUserRecord({
+      googleSub,
+      email,
+      name,
+      domain: emailDomain,
+    });
+
     // Create session
     const sessionId = uuidv4();
     const session = {
       id: sessionId,
       user: {
-        id: payload.sub,
-        email,
-        name,
-        domain: emailDomain,
+        id: appUser.id,
+        email: appUser.email,
+        name: appUser.name,
+        domain: appUser.domain,
+        googleSub,
       },
       createdAt: new Date().toISOString(),
       tokens,
@@ -196,7 +339,7 @@ app.get('/api/auth/callback', async (req, res) => {
       accountEmail: email,
       userDomain: emailDomain,
       scopes: AUTH_SCOPES,
-      token: null,
+      token: tokens,
       source: 'auth-login',
       setAsDefault: true,
     });
@@ -232,6 +375,248 @@ app.post('/api/auth/logout', (req, res) => {
     sessions.delete(sessionId);
   }
   res.json({ ok: true });
+});
+
+app.get('/api/users/me/settings', async (req, res) => {
+  const session = getSessionFromRequest(req);
+  if (!session) {
+    return res.status(401).json({ error: 'Unauthorized session' });
+  }
+
+  if (!dbPool) {
+    return res.status(503).json({ error: 'Database is not configured' });
+  }
+
+  try {
+    const [rows] = await dbPool.query(
+      'SELECT settings_json FROM user_settings WHERE user_id = ? LIMIT 1',
+      [session.user.id]
+    );
+    const row = rows?.[0];
+
+    if (!row) {
+      await dbPool.query(
+        'INSERT INTO user_settings (user_id, settings_json) VALUES (?, ?)',
+        [session.user.id, '{}']
+      );
+      return res.json({ settings: {} });
+    }
+
+    const settings = JSON.parse(row.settings_json || '{}');
+    return res.json({ settings });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Unknown settings error';
+    return res.status(500).json({ error: `Failed to load settings: ${message}` });
+  }
+});
+
+app.put('/api/users/me/settings', async (req, res) => {
+  const session = getSessionFromRequest(req);
+  if (!session) {
+    return res.status(401).json({ error: 'Unauthorized session' });
+  }
+
+  if (!dbPool) {
+    return res.status(503).json({ error: 'Database is not configured' });
+  }
+
+  const settings = req.body?.settings;
+  if (!settings || typeof settings !== 'object' || Array.isArray(settings)) {
+    return res.status(400).json({ error: 'settings object is required' });
+  }
+
+  try {
+    await dbPool.query(
+      `
+        INSERT INTO user_settings (user_id, settings_json)
+        VALUES (?, ?)
+        ON DUPLICATE KEY UPDATE settings_json = VALUES(settings_json)
+      `,
+      [session.user.id, JSON.stringify(settings)]
+    );
+    return res.json({ ok: true });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Unknown settings update error';
+    return res.status(500).json({ error: `Failed to save settings: ${message}` });
+  }
+});
+
+app.get('/api/integrations/salesforce', async (req, res) => {
+  const session = getSessionFromRequest(req);
+  if (!session) {
+    return res.status(401).json({ error: 'Unauthorized session' });
+  }
+
+  if (!dbPool) {
+    return res.status(503).json({ error: 'Database is not configured' });
+  }
+
+  try {
+    const [rows] = await dbPool.query(
+      `
+        SELECT id, salesforce_user_id, username, org_id, instance_url, scopes_json, status, is_default, connected_at, updated_at, last_synced_at
+        FROM salesforce_accounts
+        WHERE user_id = ?
+        ORDER BY connected_at DESC
+      `,
+      [session.user.id]
+    );
+
+    const accounts = rows.map((row) => ({
+      id: row.id,
+      salesforceUserId: row.salesforce_user_id,
+      username: row.username,
+      orgId: row.org_id,
+      instanceUrl: row.instance_url,
+      scopes: JSON.parse(row.scopes_json || '[]'),
+      status: row.status,
+      isDefault: !!row.is_default,
+      connectedAt: row.connected_at,
+      updatedAt: row.updated_at,
+      lastSyncedAt: row.last_synced_at,
+    }));
+
+    return res.json({
+      salesforce: {
+        status: accounts.some((a) => a.status === 'connected') ? 'connected' : 'disconnected',
+        accounts,
+      },
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Unknown Salesforce status error';
+    return res.status(500).json({ error: `Failed to load Salesforce integration: ${message}` });
+  }
+});
+
+app.post('/api/integrations/salesforce/connect', async (req, res) => {
+  const session = getSessionFromRequest(req);
+  if (!session) {
+    return res.status(401).json({ error: 'Unauthorized session' });
+  }
+
+  if (!dbPool) {
+    return res.status(503).json({ error: 'Database is not configured' });
+  }
+
+  const orgId = req.body?.orgId;
+  if (!orgId || typeof orgId !== 'string') {
+    return res.status(400).json({ error: 'orgId is required' });
+  }
+
+  const scopes = Array.isArray(req.body?.scopes) ? req.body.scopes : [];
+  const status = ['connected', 'disconnected', 'error'].includes(req.body?.status)
+    ? req.body.status
+    : 'connected';
+
+  try {
+    const [existingDefault] = await dbPool.query(
+      'SELECT id FROM salesforce_accounts WHERE user_id = ? AND is_default = 1 LIMIT 1',
+      [session.user.id]
+    );
+    const shouldSetDefault = !existingDefault?.[0];
+
+    await dbPool.query(
+      `
+        INSERT INTO salesforce_accounts (
+          id,
+          user_id,
+          salesforce_user_id,
+          username,
+          org_id,
+          instance_url,
+          scopes_json,
+          token_json,
+          status,
+          is_default,
+          connected_at,
+          updated_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+        ON DUPLICATE KEY UPDATE
+          salesforce_user_id = VALUES(salesforce_user_id),
+          username = VALUES(username),
+          instance_url = VALUES(instance_url),
+          scopes_json = VALUES(scopes_json),
+          token_json = VALUES(token_json),
+          status = VALUES(status),
+          updated_at = CURRENT_TIMESTAMP
+      `,
+      [
+        uuidv4(),
+        session.user.id,
+        req.body?.salesforceUserId ?? null,
+        req.body?.username ?? null,
+        orgId,
+        req.body?.instanceUrl ?? null,
+        JSON.stringify(scopes),
+        req.body?.token ? JSON.stringify(req.body.token) : null,
+        status,
+        shouldSetDefault ? 1 : 0,
+      ]
+    );
+
+    return res.json({ ok: true });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Unknown Salesforce connect error';
+    return res.status(500).json({ error: `Failed to store Salesforce account: ${message}` });
+  }
+});
+
+app.post('/api/integrations/salesforce/disconnect', async (req, res) => {
+  const session = getSessionFromRequest(req);
+  if (!session) {
+    return res.status(401).json({ error: 'Unauthorized session' });
+  }
+
+  if (!dbPool) {
+    return res.status(503).json({ error: 'Database is not configured' });
+  }
+
+  try {
+    const accountId = req.body?.accountId;
+    if (accountId && typeof accountId === 'string') {
+      await dbPool.query(
+        `
+          UPDATE salesforce_accounts
+          SET status = 'disconnected', token_json = NULL, is_default = 0, updated_at = CURRENT_TIMESTAMP
+          WHERE user_id = ? AND id = ?
+        `,
+        [session.user.id, accountId]
+      );
+    } else {
+      await dbPool.query(
+        `
+          UPDATE salesforce_accounts
+          SET status = 'disconnected', token_json = NULL, is_default = 0, updated_at = CURRENT_TIMESTAMP
+          WHERE user_id = ?
+        `,
+        [session.user.id]
+      );
+    }
+
+    const [firstConnected] = await dbPool.query(
+      `
+        SELECT id
+        FROM salesforce_accounts
+        WHERE user_id = ? AND status = 'connected'
+        ORDER BY connected_at ASC
+        LIMIT 1
+      `,
+      [session.user.id]
+    );
+
+    if (firstConnected?.[0]?.id) {
+      await dbPool.query(
+        'UPDATE salesforce_accounts SET is_default = 1 WHERE id = ? AND user_id = ?',
+        [firstConnected[0].id, session.user.id]
+      );
+    }
+
+    return res.json({ ok: true });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Unknown Salesforce disconnect error';
+    return res.status(500).json({ error: `Failed to disconnect Salesforce account: ${message}` });
+  }
 });
 
 // Gmail integration endpoints (kept for "Connect Gmail" in Settings tab)
@@ -363,6 +748,84 @@ app.post('/api/integrations/gmail/default', (req, res) => {
 
   defaultGmailAccountEmail = accountEmail;
   res.json({ ok: true });
+});
+
+app.get('/api/email/poll', async (req, res) => {
+  const sessionId = req.query.sessionId;
+  const session = getSessionById(sessionId);
+
+  if (!session) {
+    return res.status(401).json({ error: 'Unauthorized session' });
+  }
+
+  const defaultAccount = getDefaultGmailAccount();
+  if (!defaultAccount) {
+    return res.json({ emails: [] });
+  }
+
+  if (!isAllowedDomain(defaultAccount.accountEmail)) {
+    return res.status(403).json({ error: 'Default Gmail account domain is not authorized' });
+  }
+
+  const token = defaultAccount.token ?? session.tokens ?? null;
+  if (!token) {
+    return res.json({ emails: [] });
+  }
+
+  try {
+    const oauth2Client = getOAuthClient();
+    if (!oauth2Client) {
+      return res.status(400).json({ error: 'Missing OAuth env vars.' });
+    }
+    oauth2Client.setCredentials(token);
+
+    const gmail = google.gmail({ version: 'v1', auth: oauth2Client });
+    const listResponse = await gmail.users.messages.list({
+      userId: 'me',
+      q: 'in:inbox -category:promotions -category:social newer_than:7d',
+      maxResults: 10,
+    });
+
+    const messageMetas = listResponse.data.messages ?? [];
+    const seen = seenMessageIdsByAccount.get(defaultAccount.accountEmail) ?? new Set();
+    const newEmails = [];
+
+    for (const meta of messageMetas) {
+      if (!meta.id || seen.has(meta.id)) continue;
+
+      const msgResponse = await gmail.users.messages.get({
+        userId: 'me',
+        id: meta.id,
+        format: 'full',
+      });
+      const msg = msgResponse.data;
+      const headers = msg.payload?.headers ?? [];
+
+      const from = getHeaderValue(headers, 'From');
+      const subject = getHeaderValue(headers, 'Subject') || '(No subject)';
+      const dateHeader = getHeaderValue(headers, 'Date');
+      const body = extractTextBody(msg.payload).trim();
+
+      newEmails.push({
+        messageId: msg.id,
+        threadId: msg.threadId,
+        from,
+        subject,
+        snippet: msg.snippet ?? '',
+        body,
+        date: dateHeader || (msg.internalDate ? new Date(Number(msg.internalDate)).toISOString() : new Date().toISOString()),
+      });
+
+      seen.add(meta.id);
+    }
+
+    seenMessageIdsByAccount.set(defaultAccount.accountEmail, seen);
+    return res.json({ emails: newEmails });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Unknown poll error';
+    console.error(`[Email Poll] Error: ${message}`);
+    return res.status(500).json({ error: `Failed to poll email: ${message}` });
+  }
 });
 
 app.listen(PORT, () => {

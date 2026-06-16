@@ -1,3 +1,5 @@
+import { apiFetch } from './apiClient';
+
 export interface GmailConnectedAccount {
   accountEmail: string;
   userDomain: string | null;
@@ -20,14 +22,24 @@ interface IntegrationsResponse {
   gmail: GmailIntegrationStatus;
 }
 
+export interface PolledEmail {
+  messageId: string;
+  threadId: string;
+  from: string;
+  subject: string;
+  snippet: string;
+  body: string;
+  date: string;
+}
+
 export async function getIntegrationsStatus(): Promise<IntegrationsResponse> {
-  const res = await fetch('/api/integrations');
+  const res = await apiFetch('/api/integrations');
   if (!res.ok) throw new Error('Failed to fetch integrations status');
   return res.json() as Promise<IntegrationsResponse>;
 }
 
 export async function startGmailConnect(): Promise<string> {
-  const res = await fetch('/api/integrations/gmail/connect');
+  const res = await apiFetch('/api/integrations/gmail/connect');
   if (!res.ok) {
     const data = await res.json().catch(() => ({ error: 'Failed to start Gmail connection' }));
     throw new Error(data.error || 'Failed to start Gmail connection');
@@ -37,7 +49,7 @@ export async function startGmailConnect(): Promise<string> {
 }
 
 export async function disconnectGmail(accountEmail?: string): Promise<void> {
-  const res = await fetch('/api/integrations/gmail/disconnect', {
+  const res = await apiFetch('/api/integrations/gmail/disconnect', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ accountEmail }),
@@ -46,7 +58,7 @@ export async function disconnectGmail(accountEmail?: string): Promise<void> {
 }
 
 export async function setDefaultGmailAccount(accountEmail: string): Promise<void> {
-  const res = await fetch('/api/integrations/gmail/default', {
+  const res = await apiFetch('/api/integrations/gmail/default', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ accountEmail }),
@@ -55,4 +67,14 @@ export async function setDefaultGmailAccount(accountEmail: string): Promise<void
     const data = await res.json().catch(() => ({ error: 'Failed to set default Gmail account' }));
     throw new Error(data.error || 'Failed to set default Gmail account');
   }
+}
+
+export async function pollNewEmails(sessionId: string): Promise<PolledEmail[]> {
+  const res = await apiFetch(`/api/email/poll?sessionId=${encodeURIComponent(sessionId)}`);
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({ error: 'Failed to poll emails' }));
+    throw new Error(data.error || 'Failed to poll emails');
+  }
+  const data = (await res.json()) as { emails: PolledEmail[] };
+  return data.emails ?? [];
 }

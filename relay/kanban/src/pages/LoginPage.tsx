@@ -2,6 +2,7 @@
 
 import { useState } from 'react';
 import '../App.css';
+import { apiFetch } from '../apiClient';
 
 export function LoginPage() {
   const [loading, setLoading] = useState(false);
@@ -12,7 +13,7 @@ export function LoginPage() {
     setError(null);
 
     try {
-      const response = await fetch('/api/auth/login');
+      const response = await apiFetch('/api/auth/login');
       const data = await response.json();
 
       if (data.authUrl) {

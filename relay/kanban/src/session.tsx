@@ -3,6 +3,7 @@
 import React, { createContext, useContext, useState, useEffect } from 'react';
 import type { User } from './types';
 import { USERS } from './users';
+import { apiFetch } from './apiClient';
 
 interface AuthUser {
   id: string;
@@ -40,7 +41,7 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
 
     if (sid) {
       // Verify session with backend
-      fetch(`/api/auth/session?sessionId=${sid}`)
+      apiFetch(`/api/auth/session?sessionId=${encodeURIComponent(sid)}`)
         .then((res) => res.json())
         .then((data) => {
           if (data.authenticated && data.user) {
@@ -57,7 +58,7 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
 
   const logout = () => {
     if (sessionId) {
-      fetch('/api/auth/logout', {
+      apiFetch('/api/auth/logout', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ sessionId }),
