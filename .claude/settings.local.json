@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "PowerShell($g = Get-Command git -ErrorAction SilentlyContinue; if \\($g\\) { \"INSTALLED: $\\($g.Source\\)\"; git --version } else { \"NOT INSTALLED\" })",
+      "PowerShell(gh auth status)"
+    ]
+  }
+}
