@@ -8,4 +8,4 @@ rather than silently resolved.
 
 | # | Date | Area | Question | Decision | Rationale |
 |---|---|---|---|---|---|
-| — | — | — | No decisions logged yet | — | — |
+| 1 | 2026-06-16 | OAuth / Deployment | Multi-domain authentication for `rocketclicks.com`, `sterlinglawyers.com`, served at `relay.sterlingx.com` | **Option 2 (Internal App + Allowlist)**: OAuth app created in rocketclicks.com GCP org; public domain is sterlingx.com (DNS points to rocketclicks.com servers); both email domains allowed in OAuth consent. Single app, shared database. | rocketclicks.com owns infrastructure; sterlingx.com is public domain; simpler than full external verification. Faster to market, reduces operational overhead. |
