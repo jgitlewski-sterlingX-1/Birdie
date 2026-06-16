@@ -7,6 +7,7 @@ import { ApprovalLogView } from '../components/ApprovalLogView'
 import {
   disconnectGmail,
   getIntegrationsStatus,
+  setDefaultGmailAccount,
   startGmailConnect,
   type GmailIntegrationStatus,
 } from '../integrationsApi'
@@ -192,7 +193,8 @@ export function SettingsPage({ skillsStore, approvalsStore }: SettingsPageProps)
         <section className="panel" style={{ padding: 12, display: 'grid', gap: 10 }}>
           <h3>Gmail</h3>
           <div style={{ color: '#64748b', fontSize: 13 }}>
-            Connect your Gmail account for inbox sync and approval-gated draft creation.
+            Your login account is automatically added for Email Skill usage. You can connect extra Gmail
+            accounts and choose which one the Email Skill uses by default.
           </div>
 
           {integrationError ? (
@@ -202,9 +204,89 @@ export function SettingsPage({ skillsStore, approvalsStore }: SettingsPageProps)
           <div style={{ fontSize: 13 }}>
             Status: <strong>{gmail?.status ?? (loadingIntegration ? 'loading...' : 'unknown')}</strong>
           </div>
-          {gmail?.accountEmail ? (
-            <div style={{ fontSize: 13, color: '#334155' }}>Connected as: {gmail.accountEmail}</div>
+          {gmail?.defaultAccountEmail ? (
+            <div style={{ fontSize: 13, color: '#334155' }}>
+              Email Skill default account: <strong>{gmail.defaultAccountEmail}</strong>
+            </div>
           ) : null}
+
+          <div style={{ display: 'grid', gap: 8 }}>
+            <strong style={{ fontSize: 13 }}>Connected Gmail accounts</strong>
+            {gmail?.accounts?.length ? (
+              gmail.accounts.map((account) => {
+                const isDefault = gmail.defaultAccountEmail === account.accountEmail
+                return (
+                  <div
+                    key={account.accountEmail}
+                    style={{
+                      border: '1px solid #e2e8f0',
+                      borderRadius: 8,
+                      padding: 10,
+                      display: 'grid',
+                      gap: 6,
+                    }}
+                  >
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                      <div>
+                        <div style={{ fontWeight: 600, fontSize: 13 }}>{account.accountEmail}</div>
+                        <div style={{ color: '#64748b', fontSize: 12 }}>
+                          Source: {account.source === 'auth-login' ? 'Login account (auto-added)' : 'Connected Gmail account'}
+                        </div>
+                      </div>
+                      {isDefault ? (
+                        <span className="badge" style={{ background: '#dcfce7', color: '#166534' }}>
+                          Default
+                        </span>
+                      ) : null}
+                    </div>
+
+                    <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+                      {!isDefault ? (
+                        <button
+                          type="button"
+                          className="btn btn-ghost"
+                          onClick={async () => {
+                            try {
+                              setIntegrationError(null)
+                              await setDefaultGmailAccount(account.accountEmail)
+                              await loadIntegrationStatus()
+                            } catch (err) {
+                              const message =
+                                err instanceof Error ? err.message : 'Failed to set default Gmail account'
+                              setIntegrationError(message)
+                            }
+                          }}
+                        >
+                          Use for Email Skill
+                        </button>
+                      ) : null}
+                      <button
+                        type="button"
+                        className="btn btn-danger"
+                        onClick={async () => {
+                          try {
+                            setIntegrationError(null)
+                            await disconnectGmail(account.accountEmail)
+                            await loadIntegrationStatus()
+                          } catch (err) {
+                            const message =
+                              err instanceof Error ? err.message : 'Failed to disconnect Gmail account'
+                            setIntegrationError(message)
+                          }
+                        }}
+                      >
+                        Remove account
+                      </button>
+                    </div>
+                  </div>
+                )
+              })
+            ) : (
+              <div style={{ color: '#64748b', fontSize: 13 }}>
+                No Gmail accounts are linked yet. Sign in or connect one below.
+              </div>
+            )}
+          </div>
 
           <div className="integration-actions">
             <button
@@ -237,7 +319,7 @@ export function SettingsPage({ skillsStore, approvalsStore }: SettingsPageProps)
                 }
               }}
             >
-              Disconnect
+              Disconnect all
             </button>
             <button
               type="button"

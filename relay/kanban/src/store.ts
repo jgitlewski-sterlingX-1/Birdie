@@ -7,15 +7,40 @@ import type { Board, Card, Column } from './types';
 const STORAGE_KEY = 'relay:board';
 
 const DEFAULT_COLUMNS: Column[] = [
-  { id: 'col-todo', title: 'To Do', cardIds: [] },
-  { id: 'col-inprogress', title: 'In Progress', cardIds: [] },
+  { id: 'col-new', title: 'New', cardIds: [] },
+  { id: 'col-todo', title: 'To-do', cardIds: [] },
+  { id: 'col-inprogress', title: 'Inprogress', cardIds: [] },
   { id: 'col-done', title: 'Done', cardIds: [] },
 ];
+
+function normalizeColumns(columns: Column[] | undefined): Column[] {
+  const safeColumns = Array.isArray(columns) ? columns : [];
+  const byId = new Map(safeColumns.map((c) => [c.id, c]));
+
+  return DEFAULT_COLUMNS.map((def) => {
+    const existing = byId.get(def.id);
+    if (existing) {
+      return {
+        ...existing,
+        title: def.title,
+        cardIds: Array.isArray(existing.cardIds) ? existing.cardIds : [],
+      };
+    }
+    return { ...def, cardIds: [] };
+  });
+}
 
 function loadBoard(): Board {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
-    if (raw) return JSON.parse(raw) as Board;
+    if (raw) {
+      const parsed = JSON.parse(raw) as Board;
+      return {
+        ...parsed,
+        columns: normalizeColumns(parsed.columns),
+        cards: parsed.cards ?? {},
+      };
+    }
   } catch { /* ignore */ }
   return { columns: DEFAULT_COLUMNS, cards: {} };
 }

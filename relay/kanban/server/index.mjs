@@ -24,26 +24,61 @@ const {
   GMAIL_CLIENT_ID,
   GMAIL_CLIENT_SECRET,
   GMAIL_REDIRECT_URI = 'http://localhost:8787/api/auth/callback',
+  GMAIL_INTEGRATION_REDIRECT_URI = 'http://localhost:8787/api/integrations/gmail/callback',
   FRONTEND_URL = 'http://localhost:5176',
 } = process.env;
 
 // Session storage (in-memory; production should use database/Redis)
 const sessions = new Map();
+const GMAIL_SCOPES = ['https://www.googleapis.com/auth/gmail.readonly', 'https://www.googleapis.com/auth/gmail.compose'];
+const AUTH_SCOPES = ['openid', 'email', 'profile'];
 
-const gmailState = {
-  connected: false,
-  accountEmail: null,
-  userDomain: null,
-  scopes: ['https://www.googleapis.com/auth/gmail.readonly', 'https://www.googleapis.com/auth/gmail.compose'],
-  lastConnectedAt: null,
-  token: null,
-};
+const gmailAccounts = [];
+let defaultGmailAccountEmail = null;
 
-function getOAuthClient() {
+function upsertGmailAccount({
+  accountEmail,
+  userDomain,
+  scopes,
+  token = null,
+  source,
+  setAsDefault = false,
+}) {
+  const existing = gmailAccounts.find((account) => account.accountEmail === accountEmail);
+  const now = new Date().toISOString();
+
+  if (existing) {
+    existing.userDomain = userDomain;
+    existing.scopes = scopes;
+    existing.lastConnectedAt = now;
+    existing.token = token;
+    existing.source = source;
+  } else {
+    gmailAccounts.push({
+      accountEmail,
+      userDomain,
+      scopes,
+      lastConnectedAt: now,
+      token,
+      source,
+    });
+  }
+
+  if (!defaultGmailAccountEmail || setAsDefault) {
+    defaultGmailAccountEmail = accountEmail;
+  }
+}
+
+function getDefaultGmailAccount() {
+  if (!defaultGmailAccountEmail) return null;
+  return gmailAccounts.find((account) => account.accountEmail === defaultGmailAccountEmail) ?? null;
+}
+
+function getOAuthClient(redirectUri = GMAIL_REDIRECT_URI) {
   if (!GMAIL_CLIENT_ID || !GMAIL_CLIENT_SECRET) {
     return null;
   }
-  return new google.auth.OAuth2(GMAIL_CLIENT_ID, GMAIL_CLIENT_SECRET, GMAIL_REDIRECT_URI);
+  return new google.auth.OAuth2(GMAIL_CLIENT_ID, GMAIL_CLIENT_SECRET, redirectUri);
 }
 
 // Auth endpoints (login / logout / session)
@@ -58,7 +93,7 @@ app.get('/api/auth/login', (_req, res) => {
   const authUrl = oauth2Client.generateAuthUrl({
     access_type: 'offline',
     prompt: 'consent',
-    scope: ['openid', 'email', 'profile'],
+    scope: AUTH_SCOPES,
   });
 
   res.json({ authUrl });
@@ -71,6 +106,7 @@ app.get('/api/auth/callback', async (req, res) => {
   }
 
   const code = req.query.code;
+  const state = typeof req.query.state === 'string' ? req.query.state : '';
   if (!code || typeof code !== 'string') {
     return res.status(400).send('Missing OAuth code.');
   }
@@ -79,12 +115,54 @@ app.get('/api/auth/callback', async (req, res) => {
     const { tokens } = await oauth2Client.getToken(code);
     oauth2Client.setCredentials(tokens);
 
-    // Decode the ID token to get user info
-    const ticket = await oauth2Client.verifyIdToken({
-      idToken: tokens.id_token,
-      audience: GMAIL_CLIENT_ID,
-    });
-    const payload = ticket.getPayload();
+    if (state === 'gmail_connect') {
+      const gmail = google.gmail({ version: 'v1', auth: oauth2Client });
+      const profile = await gmail.users.getProfile({ userId: 'me' });
+
+      const accountEmail = profile.data.emailAddress || null;
+      const emailDomain = accountEmail ? accountEmail.split('@')[1] : null;
+
+      if (!emailDomain || !ALLOWED_DOMAINS.includes(emailDomain)) {
+        console.warn(
+          `[OAuth] Access denied for ${accountEmail}. Domain ${emailDomain} not in allowed list: ${ALLOWED_DOMAINS.join(', ')}`
+        );
+        return res
+          .status(403)
+          .send(
+            `Access denied. Your domain (${emailDomain}) is not authorized for Relay. Allowed domains: ${ALLOWED_DOMAINS.join(', ')}`
+          );
+      }
+
+      upsertGmailAccount({
+        accountEmail,
+        userDomain: emailDomain,
+        scopes: GMAIL_SCOPES,
+        token: tokens,
+        source: 'gmail-connect',
+        setAsDefault: !defaultGmailAccountEmail,
+      });
+
+      console.log(`[OAuth] Connected via auth callback: ${accountEmail} (domain: ${emailDomain})`);
+      return res.redirect(`${FRONTEND_URL}?gmail=connected`);
+    }
+
+    // Decode the ID token to get user info; fall back to userinfo if id_token missing
+    let payload;
+    if (tokens.id_token) {
+      const ticket = await oauth2Client.verifyIdToken({
+        idToken: tokens.id_token,
+        audience: GMAIL_CLIENT_ID,
+      });
+      payload = ticket.getPayload();
+    } else {
+      const oauth2 = google.oauth2({ version: 'v2', auth: oauth2Client });
+      const userinfo = await oauth2.userinfo.get();
+      payload = {
+        sub: userinfo.data.id,
+        email: userinfo.data.email,
+        name: userinfo.data.name,
+      };
+    }
 
     const email = payload.email || '';
     const name = payload.name || email.split('@')[0];
@@ -112,6 +190,16 @@ app.get('/api/auth/callback', async (req, res) => {
       tokens,
     };
     sessions.set(sessionId, session);
+
+    // Automatically configure the login account for email skill usage.
+    upsertGmailAccount({
+      accountEmail: email,
+      userDomain: emailDomain,
+      scopes: AUTH_SCOPES,
+      token: null,
+      source: 'auth-login',
+      setAsDefault: true,
+    });
 
     console.log(`[Auth] Logged in: ${email} (domain: ${emailDomain})`);
 
@@ -148,13 +236,23 @@ app.post('/api/auth/logout', (req, res) => {
 
 // Gmail integration endpoints (kept for "Connect Gmail" in Settings tab)
 app.get('/api/integrations', (_req, res) => {
+  const defaultAccount = getDefaultGmailAccount();
+
   res.json({
     gmail: {
-      status: gmailState.connected ? 'connected' : 'disconnected',
-      accountEmail: gmailState.accountEmail,
-      userDomain: gmailState.userDomain,
-      lastConnectedAt: gmailState.lastConnectedAt,
-      scopes: gmailState.scopes,
+      status: defaultAccount ? 'connected' : 'disconnected',
+      accountEmail: defaultAccount?.accountEmail ?? null,
+      userDomain: defaultAccount?.userDomain ?? null,
+      lastConnectedAt: defaultAccount?.lastConnectedAt ?? null,
+      scopes: defaultAccount?.scopes ?? GMAIL_SCOPES,
+      defaultAccountEmail: defaultGmailAccountEmail,
+      accounts: gmailAccounts.map((account) => ({
+        accountEmail: account.accountEmail,
+        userDomain: account.userDomain,
+        lastConnectedAt: account.lastConnectedAt,
+        scopes: account.scopes,
+        source: account.source,
+      })),
     },
   });
 });
@@ -170,7 +268,8 @@ app.get('/api/integrations/gmail/connect', (_req, res) => {
   const authUrl = oauth2Client.generateAuthUrl({
     access_type: 'offline',
     prompt: 'consent',
-    scope: gmailState.scopes,
+    scope: GMAIL_SCOPES,
+    state: 'gmail_connect',
   });
 
   res.json({ authUrl });
@@ -211,12 +310,15 @@ app.get('/api/integrations/gmail/callback', async (req, res) => {
         );
     }
 
-    // Domain is authorized; update state
-    gmailState.connected = true;
-    gmailState.accountEmail = accountEmail;
-    gmailState.userDomain = emailDomain;
-    gmailState.lastConnectedAt = new Date().toISOString();
-    gmailState.token = tokens;
+    // Domain is authorized; add/update connected Gmail account.
+    upsertGmailAccount({
+      accountEmail,
+      userDomain: emailDomain,
+      scopes: GMAIL_SCOPES,
+      token: tokens,
+      source: 'gmail-connect',
+      setAsDefault: !defaultGmailAccountEmail,
+    });
 
     console.log(`[OAuth] Connected: ${accountEmail} (domain: ${emailDomain})`);
 
@@ -229,11 +331,37 @@ app.get('/api/integrations/gmail/callback', async (req, res) => {
 });
 
 app.post('/api/integrations/gmail/disconnect', (_req, res) => {
-  gmailState.connected = false;
-  gmailState.accountEmail = null;
-  gmailState.userDomain = null;
-  gmailState.lastConnectedAt = null;
-  gmailState.token = null;
+  const accountEmail = _req.body?.accountEmail;
+
+  if (accountEmail && typeof accountEmail === 'string') {
+    const index = gmailAccounts.findIndex((account) => account.accountEmail === accountEmail);
+    if (index !== -1) {
+      gmailAccounts.splice(index, 1);
+    }
+  } else {
+    gmailAccounts.length = 0;
+  }
+
+  if (defaultGmailAccountEmail && !gmailAccounts.some((account) => account.accountEmail === defaultGmailAccountEmail)) {
+    defaultGmailAccountEmail = gmailAccounts[0]?.accountEmail ?? null;
+  }
+
+  res.json({ ok: true, defaultAccountEmail: defaultGmailAccountEmail });
+});
+
+app.post('/api/integrations/gmail/default', (req, res) => {
+  const accountEmail = req.body?.accountEmail;
+
+  if (!accountEmail || typeof accountEmail !== 'string') {
+    return res.status(400).json({ error: 'accountEmail is required' });
+  }
+
+  const accountExists = gmailAccounts.some((account) => account.accountEmail === accountEmail);
+  if (!accountExists) {
+    return res.status(404).json({ error: 'Gmail account not found' });
+  }
+
+  defaultGmailAccountEmail = accountEmail;
   res.json({ ok: true });
 });
 
