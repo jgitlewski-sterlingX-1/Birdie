@@ -1,6 +1,7 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import type { Card, Project, User } from '../types'
 import { simulateCreateDraft } from '../gmail'
+import { generateDraft } from '../draftApi'
 
 interface CardModalProps {
   card: Card
@@ -11,6 +12,9 @@ interface CardModalProps {
   onUpdateCard: (cardId: string, patch: Partial<Card>) => void
   onAddSubtask: (parentId: string, title: string) => void
   onDelegate: (cardId: string, assigneeId: string, actionItems: string[]) => void
+  onCreateProject: (name: string, description?: string) => string
+  sessionId: string
+  voiceInstructions: string
   onDeleteCard: (cardId: string) => void
   onLogApproval: (message: string, externalRef?: string) => void
 }
@@ -24,6 +28,9 @@ export function CardModal({
   onUpdateCard,
   onAddSubtask,
   onDelegate,
+  onCreateProject,
+  sessionId,
+  voiceInstructions,
   onDeleteCard,
   onLogApproval,
 }: CardModalProps) {
@@ -33,6 +40,12 @@ export function CardModal({
   const [delegateTo, setDelegateTo] = useState('')
   const [actionItems, setActionItems] = useState<string[]>([])
   const [actionInput, setActionInput] = useState('')
+  // New-project form state
+  const [newProjectName, setNewProjectName] = useState('')
+  const [showNewProject, setShowNewProject] = useState(false)
+  // Auto-draft state
+  const [draftLoading, setDraftLoading] = useState(false)
+  const [draftError, setDraftError] = useState<string | null>(null)
 
   const project = useMemo(() => projects.find((p) => p.id === card.projectId), [projects, card.projectId])
   const assignee = useMemo(() => users.find((u) => u.id === card.assigneeId), [users, card.assigneeId])
@@ -49,6 +62,44 @@ export function CardModal({
     setActionItems([])
     setActionInput('')
   }
+
+  const handleCreateProject = () => {
+    const name = newProjectName.trim()
+    if (!name) return
+    const id = onCreateProject(name)
+    onUpdateCard(card.id, { projectId: id })
+    setNewProjectName('')
+    setShowNewProject(false)
+  }
+
+  const runDraft = async () => {
+    if (!card.emailThread || card.emailThread.length === 0) return
+    setDraftLoading(true)
+    setDraftError(null)
+    try {
+      const text = await generateDraft(sessionId, {
+        messages: card.emailThread,
+        subject: card.replyMeta?.subject ?? card.title,
+        voiceInstructions,
+      })
+      setDraft(text)
+      onUpdateCard(card.id, { draft: text })
+    } catch (e) {
+      setDraftError(e instanceof Error ? e.message : 'Draft failed')
+    } finally {
+      setDraftLoading(false)
+    }
+  }
+
+  // Auto-draft a reply in the user's voice when an email card opens with no draft.
+  // The modal is keyed by card id, so this runs once per opened card.
+  useEffect(() => {
+    if (card.source !== 'gmail') return
+    if (card.draft || !card.emailThread || card.emailThread.length === 0) return
+    const t = window.setTimeout(() => void runDraft(), 0)
+    return () => window.clearTimeout(t)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   const approveGmailDraft = () => {
     if (!draft.trim()) return
@@ -152,12 +203,28 @@ export function CardModal({
 
           {card.source === 'gmail' ? (
             <section className="panel" style={{ padding: 10, display: 'grid', gap: 8 }}>
-              <h3>Reply composer</h3>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <h3>Reply composer</h3>
+                <button
+                  type="button"
+                  className="btn btn-ghost"
+                  onClick={() => void runDraft()}
+                  disabled={draftLoading}
+                >
+                  {draftLoading ? 'Drafting…' : draft ? 'Regenerate in my voice' : 'Draft in my voice'}
+                </button>
+              </div>
+              {draftLoading ? (
+                <div style={{ fontSize: 12, color: '#64748b' }}>Drafting a reply in your voice…</div>
+              ) : null}
+              {draftError ? (
+                <div style={{ fontSize: 12, color: '#b91c1c' }}>{draftError}</div>
+              ) : null}
               <textarea
                 rows={6}
                 value={draft}
                 onChange={(e) => setDraft(e.target.value)}
-                placeholder="Write a draft reply..."
+                placeholder={draftLoading ? 'Drafting in your voice…' : 'Write a draft reply...'}
                 style={{ border: '1px solid #cbd5e1', borderRadius: 8, padding: 8 }}
               />
               <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
@@ -258,6 +325,45 @@ export function CardModal({
                 ))}
               </select>
             </label>
+            {showNewProject ? (
+              <div className="modal-subtask-add">
+                <input
+                  value={newProjectName}
+                  onChange={(e) => setNewProjectName(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') {
+                      e.preventDefault()
+                      handleCreateProject()
+                    }
+                  }}
+                  placeholder="New project name"
+                  autoFocus
+                  style={{ border: '1px solid #cbd5e1', borderRadius: 6, padding: '6px 8px', flex: 1 }}
+                />
+                <button type="button" className="btn btn-primary" onClick={handleCreateProject}>
+                  Create
+                </button>
+                <button
+                  type="button"
+                  className="btn btn-ghost"
+                  onClick={() => {
+                    setShowNewProject(false)
+                    setNewProjectName('')
+                  }}
+                >
+                  Cancel
+                </button>
+              </div>
+            ) : (
+              <button
+                type="button"
+                className="btn btn-ghost"
+                style={{ justifySelf: 'start' }}
+                onClick={() => setShowNewProject(true)}
+              >
+                + New project
+              </button>
+            )}
             <div style={{ fontSize: 12, color: '#64748b' }}>
               {project ? `Project color: ${project.color}` : 'No project selected'}
             </div>

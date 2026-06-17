@@ -17,6 +17,9 @@ interface HomePageProps {
   onSimulateEmail: () => void
   onPullInbox: () => void
   pollStatus: string | null
+  onCreateProject: (name: string, description?: string) => string
+  sessionId: string
+  voiceInstructions: string
 }
 
 export function HomePage({
@@ -30,6 +33,9 @@ export function HomePage({
   onSimulateEmail,
   onPullInbox,
   pollStatus,
+  onCreateProject,
+  sessionId,
+  voiceInstructions,
 }: HomePageProps) {
   const { board, addCard, updateCard, deleteCard, addSubtask, delegateCard } = boardStore
 
@@ -87,6 +93,7 @@ export function HomePage({
 
       {activeCard ? (
         <CardModal
+          key={activeCard.id}
           card={activeCard}
           projects={projects}
           users={USERS}
@@ -95,6 +102,9 @@ export function HomePage({
           onUpdateCard={updateCard}
           onAddSubtask={addSubtask}
           onDelegate={delegateCard}
+          onCreateProject={onCreateProject}
+          sessionId={sessionId}
+          voiceInstructions={voiceInstructions}
           onDeleteCard={deleteCard}
           onLogApproval={(message, externalRef) => {
             approvalsStore.addEntry({

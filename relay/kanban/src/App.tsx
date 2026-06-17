@@ -70,6 +70,12 @@ function AuthenticatedShell() {
   // User-visible status of the last email pull.
   const [pollStatus, setPollStatus] = useState<string | null>(null)
 
+  // Voice instructions used for auto-drafting replies (the "Reply Voice" skill).
+  const voiceInstructions = useMemo(
+    () => skillsStore.allSkills.find((s) => s.id === 'base-email-voice' && s.enabled)?.instructions ?? '',
+    [skillsStore.allSkills]
+  )
+
   const activeCard: Card | null = useMemo(
     () => (activeCardId ? boardStore.board.cards[activeCardId] ?? null : null),
     [activeCardId, boardStore.board.cards]
@@ -168,6 +174,9 @@ function AuthenticatedShell() {
             onSimulateEmail={() => ingestEmailCard(SAMPLE_EMAIL)}
             onPullInbox={pullInbox}
             pollStatus={pollStatus}
+            onCreateProject={projectsStore.addProject}
+            sessionId={sessionId ?? ''}
+            voiceInstructions={voiceInstructions}
           />
         ) : null}
         {view === 'projects' ? (

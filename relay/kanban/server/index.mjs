@@ -828,6 +828,75 @@ app.get('/api/email/poll', async (req, res) => {
   }
 });
 
+// Draft an email reply in the user's voice via Claude.
+app.post('/api/email/draft', async (req, res) => {
+  const sessionId = req.query.sessionId || req.body?.sessionId;
+  const session = getSessionById(sessionId);
+  if (!session) {
+    return res.status(401).json({ error: 'Unauthorized session' });
+  }
+
+  const apiKey = process.env.ANTHROPIC_API_KEY;
+  if (!apiKey) {
+    return res.status(400).json({ error: 'ANTHROPIC_API_KEY is not set on the server.' });
+  }
+
+  const { messages = [], subject = '', voiceInstructions = '' } = req.body ?? {};
+  if (!Array.isArray(messages) || messages.length === 0) {
+    return res.status(400).json({ error: 'No email thread to draft from.' });
+  }
+
+  const threadText = messages
+    .map((m) => `From: ${m.from || 'unknown'}\n${m.body || ''}`)
+    .join('\n\n---\n\n');
+
+  const userName = session.user?.name || 'the user';
+  const system =
+    `You draft email replies on behalf of ${userName}. Write a ready-to-send reply in their voice.` +
+    (voiceInstructions ? `\n\nVoice & style guidance:\n${voiceInstructions}` : '') +
+    `\n\nReturn ONLY the reply body — no subject line, no "Here is a draft", no surrounding quotes.`;
+
+  const userMsg =
+    `Subject: ${subject}\n\nEmail thread (most recent message last):\n\n${threadText}\n\n` +
+    `Draft ${userName}'s reply.`;
+
+  try {
+    const claudeRes = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-api-key': apiKey,
+        'anthropic-version': '2023-06-01',
+      },
+      body: JSON.stringify({
+        model: process.env.ANTHROPIC_MODEL || 'claude-sonnet-4-6',
+        max_tokens: 1024,
+        system,
+        messages: [{ role: 'user', content: userMsg }],
+      }),
+    });
+
+    if (!claudeRes.ok) {
+      const text = await claudeRes.text();
+      console.error(`[Email Draft] Claude error ${claudeRes.status}: ${text.slice(0, 300)}`);
+      return res.status(502).json({ error: `Claude error: ${claudeRes.status}` });
+    }
+
+    const data = await claudeRes.json();
+    const draft = (data.content ?? [])
+      .filter((b) => b.type === 'text')
+      .map((b) => b.text)
+      .join('')
+      .trim();
+
+    return res.json({ draft });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Unknown draft error';
+    console.error(`[Email Draft] Error: ${message}`);
+    return res.status(500).json({ error: `Failed to draft reply: ${message}` });
+  }
+});
+
 app.listen(PORT, () => {
   console.log(`Relay API listening on http://localhost:${PORT}`);
   console.log(`[Config] Allowed domains: ${ALLOWED_DOMAINS.join(', ')}`);

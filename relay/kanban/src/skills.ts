@@ -19,6 +19,21 @@ export const BASE_SKILLS: Skill[] = [
     updatedAt: new Date().toISOString(),
   },
   {
+    id: 'base-email-voice',
+    name: 'Reply Voice',
+    category: 'email',
+    kind: 'base',
+    description: "Drafts email replies in the user's voice.",
+    instructions:
+      'Draft replies that sound like the user: warm but professional, concise, ' +
+      'and direct. Open by acknowledging the sender, address each request in the ' +
+      'thread, and close with a clear next step. Avoid filler, hedging, and legalese ' +
+      'unless the thread calls for it. Keep it to a few short paragraphs. ' +
+      'This is a default voice — refine it with a custom skill to match the user exactly.',
+    enabled: true,
+    updatedAt: new Date().toISOString(),
+  },
+  {
     id: 'base-slack-triage',
     name: 'Slack Triage',
     category: 'slack',
