@@ -27,9 +27,20 @@ Public URL: `https://phpstack-1565248-6494558.cloudwaysapps.com`
    https://phpstack-1565248-6494558.cloudwaysapps.com/api/auth/callback
    ```
 
+2b. **Slack app** (api.slack.com/apps) → OAuth & Permissions → Redirect URLs → add:
+
+   ```
+   https://phpstack-1565248-6494558.cloudwaysapps.com/api/integrations/slack/callback
+   ```
+
+   Set the User Token Scopes (read + send as the user): `channels:history`,
+   `channels:read`, `groups:history`, `im:history`, `chat:write`, `users:read`,
+   `search:read`. The app must be approved/installed in the workspace.
+
 3. **API env**: copy [relay-api.env.example](relay-api.env.example) to
    `~/relay-api/relay/kanban/.env` on the server and fill in
-   `GMAIL_CLIENT_ID` / `GMAIL_CLIENT_SECRET`.
+   `GMAIL_CLIENT_ID` / `GMAIL_CLIENT_SECRET`, `ANTHROPIC_API_KEY` (email
+   drafting), and `SLACK_CLIENT_ID` / `SLACK_CLIENT_SECRET`.
 
 4. **Bootstrap the API**: `bash setup-api.sh` (clones main, installs runtime
    deps, starts `relay-api` under pm2).

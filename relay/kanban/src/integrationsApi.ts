@@ -18,8 +18,45 @@ export interface GmailIntegrationStatus {
   accounts: GmailConnectedAccount[];
 }
 
+export interface ClaudeIntegrationStatus {
+  status: 'connected' | 'disconnected';
+  model: string;
+}
+
+export interface SimpleIntegrationStatus {
+  status: 'connected' | 'disconnected';
+  available?: boolean;
+}
+
+export interface SlackIntegrationStatus {
+  status: 'connected' | 'disconnected';
+  available?: boolean;
+  teamName?: string | null;
+  authedUserId?: string | null;
+  scopes?: string[];
+  connectedAt?: string | null;
+}
+
 interface IntegrationsResponse {
   gmail: GmailIntegrationStatus;
+  claude: ClaudeIntegrationStatus;
+  slack: SlackIntegrationStatus;
+  clickup: SimpleIntegrationStatus;
+}
+
+export interface SalesforceAccount {
+  id: string;
+  username: string;
+  orgId: string;
+  instanceUrl: string;
+  status: string;
+  isDefault: boolean;
+  connectedAt?: string;
+}
+
+export interface SalesforceStatus {
+  status: 'connected' | 'disconnected';
+  accounts: SalesforceAccount[];
 }
 
 export interface PolledEmail {
@@ -38,6 +75,19 @@ export async function getIntegrationsStatus(): Promise<IntegrationsResponse> {
   return res.json() as Promise<IntegrationsResponse>;
 }
 
+// Salesforce lives behind the DB; degrade gracefully to "disconnected" when the
+// DB isn't configured (in-memory mode) or the call fails.
+export async function getSalesforceStatus(sessionId: string): Promise<SalesforceStatus> {
+  try {
+    const res = await apiFetch(`/api/integrations/salesforce?sessionId=${encodeURIComponent(sessionId)}`);
+    if (!res.ok) return { status: 'disconnected', accounts: [] };
+    const data = (await res.json()) as { salesforce?: SalesforceStatus };
+    return data.salesforce ?? { status: 'disconnected', accounts: [] };
+  } catch {
+    return { status: 'disconnected', accounts: [] };
+  }
+}
+
 export async function startGmailConnect(): Promise<string> {
   const res = await apiFetch('/api/integrations/gmail/connect');
   if (!res.ok) {
@@ -46,6 +96,21 @@ export async function startGmailConnect(): Promise<string> {
   }
   const data = (await res.json()) as { authUrl: string };
   return data.authUrl;
+}
+
+export async function startSlackConnect(): Promise<string> {
+  const res = await apiFetch('/api/integrations/slack/connect');
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({ error: 'Failed to start Slack connection' }));
+    throw new Error(data.error || 'Failed to start Slack connection');
+  }
+  const data = (await res.json()) as { authUrl: string };
+  return data.authUrl;
+}
+
+export async function disconnectSlack(): Promise<void> {
+  const res = await apiFetch('/api/integrations/slack/disconnect', { method: 'POST' });
+  if (!res.ok) throw new Error('Failed to disconnect Slack');
 }
 
 export async function disconnectGmail(accountEmail?: string): Promise<void> {

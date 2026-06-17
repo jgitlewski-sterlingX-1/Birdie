@@ -38,10 +38,14 @@ const {
 // Session storage (in-memory; production should use database/Redis)
 const sessions = new Map();
 const GMAIL_SCOPES = ['https://www.googleapis.com/auth/gmail.readonly', 'https://www.googleapis.com/auth/gmail.compose'];
+// User-token scopes: read + send as the user (mirrors the email flow).
+const SLACK_USER_SCOPES = 'channels:history,channels:read,groups:history,im:history,chat:write,users:read,search:read';
 const AUTH_SCOPES = ['openid', 'email', 'profile', ...GMAIL_SCOPES];
 
 const gmailAccounts = [];
 let defaultGmailAccountEmail = null;
+// In-memory Slack connection (single workspace, like gmailAccounts).
+let slackAccount = null;
 const seenMessageIdsByAccount = new Map();
 
 const dbPool =
@@ -639,6 +643,22 @@ app.get('/api/integrations', (_req, res) => {
         source: account.source,
       })),
     },
+    claude: {
+      status: process.env.ANTHROPIC_API_KEY ? 'connected' : 'disconnected',
+      model: process.env.ANTHROPIC_MODEL || 'claude-sonnet-4-6',
+    },
+    slack: slackAccount
+      ? {
+          status: 'connected',
+          available: true,
+          teamName: slackAccount.teamName,
+          authedUserId: slackAccount.userId,
+          scopes: slackAccount.scopes,
+          connectedAt: slackAccount.connectedAt,
+        }
+      : { status: 'disconnected', available: !!process.env.SLACK_CLIENT_ID },
+    // Not yet wired server-side.
+    clickup: { status: 'disconnected', available: false },
   });
 });
 
@@ -826,6 +846,71 @@ app.get('/api/email/poll', async (req, res) => {
     console.error(`[Email Poll] Error: ${message}`);
     return res.status(500).json({ error: `Failed to poll email: ${message}` });
   }
+});
+
+// ── Slack OAuth (user token: read + send as the user) ──────────────────────────
+
+function getSlackRedirectUri() {
+  return process.env.SLACK_REDIRECT_URI || `http://localhost:${PORT}/api/integrations/slack/callback`;
+}
+
+app.get('/api/integrations/slack/connect', (_req, res) => {
+  const clientId = process.env.SLACK_CLIENT_ID;
+  if (!clientId) {
+    return res.status(400).json({ error: 'SLACK_CLIENT_ID is not set on the server.' });
+  }
+  const authUrl =
+    `https://slack.com/oauth/v2/authorize?client_id=${encodeURIComponent(clientId)}` +
+    `&user_scope=${encodeURIComponent(SLACK_USER_SCOPES)}` +
+    `&redirect_uri=${encodeURIComponent(getSlackRedirectUri())}` +
+    `&state=slack_connect`;
+  res.json({ authUrl });
+});
+
+app.get('/api/integrations/slack/callback', async (req, res) => {
+  const code = req.query.code;
+  const clientId = process.env.SLACK_CLIENT_ID;
+  const clientSecret = process.env.SLACK_CLIENT_SECRET;
+  if (!code || !clientId || !clientSecret) {
+    return res.status(400).send('Slack OAuth is not configured, or the code is missing.');
+  }
+  try {
+    const body = new URLSearchParams({
+      client_id: clientId,
+      client_secret: clientSecret,
+      code: String(code),
+      redirect_uri: getSlackRedirectUri(),
+    });
+    const r = await fetch('https://slack.com/api/oauth.v2.access', {
+      method: 'POST',
+      headers: { 'content-type': 'application/x-www-form-urlencoded' },
+      body,
+    });
+    const data = await r.json();
+    if (!data.ok) {
+      console.error(`[Slack OAuth] Error: ${data.error}`);
+      return res.status(400).send(`Slack OAuth failed: ${data.error}`);
+    }
+    slackAccount = {
+      teamId: data.team?.id ?? null,
+      teamName: data.team?.name ?? null,
+      userId: data.authed_user?.id ?? null,
+      accessToken: data.authed_user?.access_token ?? null,
+      scopes: (data.authed_user?.scope ?? '').split(',').filter(Boolean),
+      connectedAt: new Date().toISOString(),
+    };
+    console.log(`[Slack OAuth] Connected team "${slackAccount.teamName}" (user ${slackAccount.userId})`);
+    return res.redirect(`${FRONTEND_URL}?slack=connected`);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Unknown Slack OAuth error';
+    console.error(`[Slack OAuth] Error: ${message}`);
+    return res.status(500).send(`Slack OAuth failed: ${message}`);
+  }
+});
+
+app.post('/api/integrations/slack/disconnect', (_req, res) => {
+  slackAccount = null;
+  res.json({ ok: true });
 });
 
 // Draft an email reply in the user's voice via Claude.

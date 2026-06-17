@@ -6,10 +6,16 @@ import { useSession } from '../session'
 import { ApprovalLogView } from '../components/ApprovalLogView'
 import {
   disconnectGmail,
+  disconnectSlack,
   getIntegrationsStatus,
+  getSalesforceStatus,
   setDefaultGmailAccount,
   startGmailConnect,
+  startSlackConnect,
+  type ClaudeIntegrationStatus,
   type GmailIntegrationStatus,
+  type SalesforceStatus,
+  type SlackIntegrationStatus,
 } from '../integrationsApi'
 
 type Tab = 'skills' | 'approvals' | 'integrations'
@@ -26,10 +32,13 @@ export function SettingsPage({ skillsStore, approvalsStore }: SettingsPageProps)
   const [description, setDescription] = useState('')
   const [instructions, setInstructions] = useState('')
   const [gmail, setGmail] = useState<GmailIntegrationStatus | null>(null)
+  const [claudeStatus, setClaudeStatus] = useState<ClaudeIntegrationStatus | null>(null)
+  const [slackStatus, setSlackStatus] = useState<SlackIntegrationStatus | null>(null)
+  const [sfStatus, setSfStatus] = useState<SalesforceStatus | null>(null)
   const [integrationError, setIntegrationError] = useState<string | null>(null)
   const [loadingIntegration, setLoadingIntegration] = useState(false)
 
-  const { currentUser } = useSession()
+  const { currentUser, sessionId } = useSession()
 
   const loadIntegrationStatus = async () => {
     try {
@@ -37,6 +46,9 @@ export function SettingsPage({ skillsStore, approvalsStore }: SettingsPageProps)
       setIntegrationError(null)
       const data = await getIntegrationsStatus()
       setGmail(data.gmail)
+      setClaudeStatus(data.claude)
+      setSlackStatus(data.slack)
+      setSfStatus(await getSalesforceStatus(sessionId ?? ''))
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Failed to load integrations'
       setIntegrationError(message)
@@ -46,8 +58,101 @@ export function SettingsPage({ skillsStore, approvalsStore }: SettingsPageProps)
   }
 
   useEffect(() => {
-    loadIntegrationStatus()
+    const t = window.setTimeout(() => void loadIntegrationStatus(), 0)
+    return () => window.clearTimeout(t)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
+
+  const connectSlack = async () => {
+    try {
+      setIntegrationError(null)
+      const url = await startSlackConnect()
+      window.location.assign(url)
+    } catch (err) {
+      setIntegrationError(err instanceof Error ? err.message : 'Failed to start Slack connection')
+    }
+  }
+
+  const disconnectSlackAccount = async () => {
+    try {
+      setIntegrationError(null)
+      await disconnectSlack()
+      await loadIntegrationStatus()
+    } catch (err) {
+      setIntegrationError(err instanceof Error ? err.message : 'Failed to disconnect Slack')
+    }
+  }
+
+  type Tile = {
+    key: string
+    name: string
+    color: string
+    connected: boolean
+    details: string[]
+    action?: { label: string; onClick: () => void; danger?: boolean }
+  }
+
+  const sfPrimary = sfStatus?.accounts?.[0]
+  const integrationTiles: Tile[] = [
+    {
+      key: 'claude',
+      name: 'Claude',
+      color: '#D97757',
+      connected: claudeStatus?.status === 'connected',
+      details:
+        claudeStatus?.status === 'connected'
+          ? [`Model: ${claudeStatus.model}`, 'Drafts replies · triages email']
+          : ['Set ANTHROPIC_API_KEY on the server'],
+    },
+    {
+      key: 'gmail',
+      name: 'Gmail',
+      color: '#EA4335',
+      connected: gmail?.status === 'connected',
+      details:
+        gmail?.status === 'connected'
+          ? [
+              gmail.defaultAccountEmail ?? '',
+              `${gmail.accounts?.length ?? 0} account(s) · ${gmail.userDomain ?? ''}`,
+            ]
+          : ['Sign in or connect an account'],
+    },
+    {
+      key: 'slack',
+      name: 'Slack',
+      color: '#4A154B',
+      connected: slackStatus?.status === 'connected',
+      details:
+        slackStatus?.status === 'connected'
+          ? [slackStatus.teamName ?? 'Connected workspace', `Signed in as ${slackStatus.authedUserId ?? 'user'}`]
+          : slackStatus?.available
+            ? ['Click Connect to authorize']
+            : ['Add SLACK_CLIENT_ID on the server'],
+      action:
+        slackStatus?.status === 'connected'
+          ? { label: 'Disconnect', onClick: disconnectSlackAccount, danger: true }
+          : slackStatus?.available
+            ? { label: 'Connect', onClick: connectSlack }
+            : undefined,
+    },
+    {
+      key: 'clickup',
+      name: 'ClickUp',
+      color: '#7B68EE',
+      connected: false,
+      details: ['Not yet available'],
+    },
+    {
+      key: 'salesforce',
+      name: 'Salesforce',
+      color: '#00A1E0',
+      connected: sfStatus?.status === 'connected',
+      details:
+        sfStatus?.status === 'connected' && sfPrimary
+          ? [sfPrimary.username, `Org ${sfPrimary.orgId}`]
+          : ['Not connected'],
+    },
+  ]
 
   return (
     <div>
@@ -190,8 +295,84 @@ export function SettingsPage({ skillsStore, approvalsStore }: SettingsPageProps)
       ) : tab === 'approvals' ? (
         <ApprovalLogView log={approvalsStore.log} />
       ) : (
-        <section className="panel" style={{ padding: 12, display: 'grid', gap: 10 }}>
-          <h3>Gmail</h3>
+        <div style={{ display: 'grid', gap: 12 }}>
+          <section className="panel" style={{ padding: 12 }}>
+            <h3 style={{ marginBottom: 8 }}>Connected apps</h3>
+            <div
+              style={{
+                display: 'grid',
+                gridTemplateColumns: 'repeat(auto-fill, minmax(220px, 1fr))',
+                gap: 10,
+              }}
+            >
+              {integrationTiles.map((tile) => (
+                <div
+                  key={tile.key}
+                  style={{
+                    border: '1px solid #e2e8f0',
+                    borderRadius: 12,
+                    padding: 12,
+                    display: 'grid',
+                    gap: 8,
+                    background: '#fff',
+                  }}
+                >
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                      <span
+                        style={{
+                          width: 28,
+                          height: 28,
+                          borderRadius: 8,
+                          background: tile.color,
+                          color: '#fff',
+                          display: 'inline-flex',
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                          fontWeight: 700,
+                          fontSize: 13,
+                        }}
+                      >
+                        {tile.name[0]}
+                      </span>
+                      <strong>{tile.name}</strong>
+                    </div>
+                    <span
+                      className="badge"
+                      style={
+                        tile.connected
+                          ? { background: '#dcfce7', color: '#166534' }
+                          : { background: '#f1f5f9', color: '#64748b' }
+                      }
+                    >
+                      {tile.connected ? 'Connected' : 'Not connected'}
+                    </span>
+                  </div>
+                  <div style={{ display: 'grid', gap: 2 }}>
+                    {tile.details.filter(Boolean).map((d, i) => (
+                      <div key={i} style={{ fontSize: 12, color: tile.connected ? '#334155' : '#94a3b8' }}>
+                        {d}
+                      </div>
+                    ))}
+                  </div>
+                  {tile.action ? (
+                    <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+                      <button
+                        type="button"
+                        className={tile.action.danger ? 'btn btn-danger' : 'btn btn-primary'}
+                        onClick={tile.action.onClick}
+                      >
+                        {tile.action.label}
+                      </button>
+                    </div>
+                  ) : null}
+                </div>
+              ))}
+            </div>
+          </section>
+
+          <section className="panel" style={{ padding: 12, display: 'grid', gap: 10 }}>
+            <h3>Gmail</h3>
           <div style={{ color: '#64748b', fontSize: 13 }}>
             Your login account is automatically added for Email Skill usage. You can connect extra Gmail
             accounts and choose which one the Email Skill uses by default.
@@ -330,6 +511,7 @@ export function SettingsPage({ skillsStore, approvalsStore }: SettingsPageProps)
             </button>
           </div>
         </section>
+        </div>
       )}
     </div>
   )
