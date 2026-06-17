@@ -1,141 +1,77 @@
 /**
- * Birdie Master Orchestrator
+ * Birdie CEO Orchestrator
  *
- * Routes incoming tasks to the correct project sub-agent.
- * Sub-agents are called as tools — the orchestrator decides which agent(s)
- * to invoke and synthesizes a final response.
+ * The master agent. It is an executive coordinator: it understands the user's
+ * intent and delegates to the right department head(s), then synthesizes the
+ * result. It never does department work itself — it has no tools except the
+ * Agent (delegation) tool.
+ *
+ * Built on the Claude Agent SDK. The five department heads are defined in
+ * control-plane/departments.ts and exposed to the CEO as subagents. Every leaf
+ * tool call they make is gated by control-plane/policy.ts.
  */
 
-import Anthropic from '@anthropic-ai/sdk';
-import { relayAgent } from './agents/relay.js';
+import { query } from '@anthropic-ai/claude-agent-sdk';
+import { DEPARTMENTS } from './control-plane/departments.js';
+import { makeCanUseTool } from './control-plane/policy.js';
 
-const client = new Anthropic({
-  apiKey: process.env.ANTHROPIC_API_KEY,
-});
+const CEO_MODEL = 'claude-opus-4-5';
 
-// ── Tool definitions ──────────────────────────────────────────────────────────
-// Each project sub-agent is exposed as a tool the orchestrator can call.
+const CEO_SYSTEM_PROMPT = `\
+You are the Birdie CEO — the master coordinator of an executive workbench. You
+manage five department heads and delegate all real work to them. You never
+perform department work yourself; you have no tools except delegation.
 
-const tools: Anthropic.Tool[] = [
-  {
-    name: 'relay_agent',
-    description:
-      'Delegate a task to the Relay sub-agent. ' +
-      'Relay is an internal triage workspace for Sterling Lawyers built on ' +
-      'Next.js / TypeScript / GCP. Use this for any task related to the Relay ' +
-      'project: building features, reviewing code, answering architecture ' +
-      'questions, running phases, or checking on build status.',
-    input_schema: {
-      type: 'object' as const,
-      properties: {
-        task: {
-          type: 'string',
-          description: 'The specific task or question for the Relay sub-agent.',
-        },
-        context: {
-          type: 'string',
-          description:
-            'Optional additional context to pass to the sub-agent ' +
-            '(e.g. file contents, error messages, prior decisions).',
-        },
-      },
-      required: ['task'],
-    },
-  },
-];
+Your department heads (delegate via the Agent tool, by name):
+- communications_manager — outbound external email & Slack (draft/send).
+- operations_manager — task & work management in ClickUp.
+- calendar_manager — scheduling and calendar defense.
+- receptionist — inbound email triage, classification, labeling (read/draft only).
+- finance_manager — accounting & finance data and analysis (read-only).
 
-// ── Tool dispatcher ───────────────────────────────────────────────────────────
-
-async function dispatchTool(
-  name: string,
-  input: Record<string, string>
-): Promise<string> {
-  switch (name) {
-    case 'relay_agent':
-      return relayAgent(input.task, input.context);
-    default:
-      return `Unknown tool: ${name}`;
-  }
-}
-
-// ── Orchestrate ───────────────────────────────────────────────────────────────
-
-export async function orchestrate(userTask: string): Promise<string> {
-  const messages: Anthropic.MessageParam[] = [
-    { role: 'user', content: userTask },
-  ];
-
-  // Agentic loop — continues until the model stops calling tools
-  while (true) {
-    const response = await client.messages.create({
-      model: 'claude-opus-4-5',
-      max_tokens: 8096,
-      system: ORCHESTRATOR_SYSTEM_PROMPT,
-      tools,
-      messages,
-    });
-
-    // Append assistant turn
-    messages.push({ role: 'assistant', content: response.content });
-
-    if (response.stop_reason === 'end_turn') {
-      // Extract final text
-      const textBlock = response.content.find((b) => b.type === 'text');
-      return textBlock ? textBlock.text : '(no response)';
-    }
-
-    if (response.stop_reason === 'tool_use') {
-      // Execute each tool call and collect results
-      const toolResults: Anthropic.ToolResultBlockParam[] = [];
-
-      for (const block of response.content) {
-        if (block.type !== 'tool_use') continue;
-
-        console.log(`  → calling ${block.name}...`);
-        const result = await dispatchTool(
-          block.name,
-          block.input as Record<string, string>
-        );
-        toolResults.push({
-          type: 'tool_result',
-          tool_use_id: block.id,
-          content: result,
-        });
-      }
-
-      messages.push({ role: 'user', content: toolResults });
-      continue;
-    }
-
-    // Unexpected stop reason
-    break;
-  }
-
-  return '(orchestrator stopped unexpectedly)';
-}
-
-// ── System prompt ─────────────────────────────────────────────────────────────
-
-const ORCHESTRATOR_SYSTEM_PROMPT = `\
-You are the Birdie Orchestrator — the master agent for the Birdie software \
-workbench. Birdie is a collection of product projects, each managed by a \
-dedicated sub-agent you can delegate to.
-
-Current projects:
-- **Relay** (relay_agent): Internal triage workspace for Sterling Lawyers. \
-  Next.js / TypeScript / GCP stack. Has a full build spec and operating contract.
-
-Your job:
-1. Understand the user's task or question.
-2. Identify which project(s) it concerns.
-3. Delegate to the appropriate sub-agent(s) using the available tools.
-4. Synthesize the sub-agent results into a clear, actionable response for the user.
+How you work:
+1. Understand the user's intent.
+2. Identify which department head(s) own it.
+3. Delegate with a clear, self-contained brief — department heads do NOT share
+   your conversation history, so include every fact they need in the delegation.
+4. If a task spans departments, delegate to each in turn and coordinate.
+5. Synthesize the results into one clear, actionable answer.
 
 Rules:
-- Always delegate project-specific work to the correct sub-agent — never attempt \
-  to implement code yourself.
-- If a task spans multiple projects, call each sub-agent in turn.
-- If a task is general (e.g. "what projects are in Birdie?"), answer directly \
-  without calling any tool.
-- Be concise. Surface blockers and decisions that need human input immediately.
-`;
+- Always delegate department-specific work. Never try to do it yourself.
+- Outbound and state-changing actions are approval-gated downstream; tell the
+  user when something is awaiting approval rather than claiming it's done.
+- For general questions ("who are my department heads?"), answer directly.
+- Be concise. Surface blockers and decisions needing human input immediately.`;
+
+/**
+ * Runs one user task through the CEO and returns the final synthesized text.
+ */
+export async function orchestrate(userTask: string): Promise<string> {
+  let finalText = '';
+
+  const run = query({
+    prompt: userTask,
+    options: {
+      model: CEO_MODEL,
+      systemPrompt: CEO_SYSTEM_PROMPT,
+      // The CEO can ONLY delegate — no filesystem, bash, or direct tools.
+      allowedTools: ['Agent'],
+      // The five department heads, each with its own locked core + capabilities.
+      agents: DEPARTMENTS as never,
+      // Hard guarantee: load NO filesystem config (.claude / CLAUDE.md / settings).
+      settingSources: [],
+      // Governance funnel: every leaf tool call routes through approval policy.
+      canUseTool: makeCanUseTool() as never,
+    } as never,
+  });
+
+  for await (const message of run) {
+    const m = message as { type?: string; result?: string };
+    if (m.type === 'result' && typeof m.result === 'string') {
+      finalText = m.result;
+    }
+  }
+
+  return finalText || '(orchestrator produced no result)';
+}

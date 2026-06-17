@@ -4,18 +4,25 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What Birdie is
 
-Birdie is a multi-project software workbench. It contains two independent npm
+Birdie is an executive agent workbench. It contains two independent npm
 packages with no shared build:
 
-- **`orchestrator/`** — a master agent (Node + TypeScript, ESM) that routes a
-  user task to the right project sub-agent. Sub-agents are exposed to the
-  orchestrator as Anthropic tool calls; the orchestrator runs an agentic loop,
-  delegates, and synthesizes the final answer. It never writes project code
-  itself — it always delegates.
-- **`relay/`** — the first (and currently only) project the orchestrator
-  manages. Relay is an internal triage workspace for Sterling Lawyers. This
-  directory holds the product spec, the operating contract, and a working
-  prototype.
+- **`orchestrator/`** — the CEO master agent (Node + TypeScript, ESM) built on
+  the **Claude Agent SDK**. It coordinates five **department heads**, exposed as
+  subagents, and delegates all real work to them — it has no tools except
+  delegation (`Agent`). Each department head has a managed, code-composed core
+  (org non-negotiables + role + operating contract) plus a base capability set
+  of MCP tools. Every leaf tool call is gated by an approval policy
+  ([orchestrator/src/control-plane/policy.ts](orchestrator/src/control-plane/policy.ts)).
+  The five heads: `communications_manager`, `operations_manager`,
+  `calendar_manager`, `receptionist`, `finance_manager`
+  (see [orchestrator/src/control-plane/departments.ts](orchestrator/src/control-plane/departments.ts)).
+- **`relay/`** — an internal triage workspace for Sterling Lawyers. It holds a
+  product spec, operating contract, and working prototype. **Note:** Relay is no
+  longer wired into the orchestrator — the legacy raw-SDK sub-agent
+  ([orchestrator/src/agents/relay.ts](orchestrator/src/agents/relay.ts)) remains
+  in the repo but is not registered. The `relay/` directory still stands on its
+  own for that project's frontend.
 
 The two are linked at runtime: the Relay sub-agent
 ([orchestrator/src/agents/relay.ts](orchestrator/src/agents/relay.ts)) reads
@@ -52,9 +59,25 @@ root-level package or workspace.
 
 ### orchestrator/
 
-Requires `ANTHROPIC_API_KEY` (read via `dotenv` from a `.env` file). Model ids
-are hardcoded in the source — `claude-opus-4-5` for the orchestrator loop, and
-the Relay sub-agent calls a Claude Sonnet model.
+Requires `ANTHROPIC_API_KEY` (read via `dotenv` from a `.env` file). The CEO
+runs on `claude-opus-4-5`; each department head runs on Sonnet (set per agent in
+`departments.ts`).
+
+Department-head capabilities come from remote MCP servers configured via env
+(unset servers boot but fail on first call). Set the ones you use:
+
+```
+GMAIL_MCP_URL / GMAIL_MCP_TOKEN          # comms + receptionist
+GCAL_MCP_URL / GCAL_MCP_TOKEN            # calendar
+SLACK_MCP_URL / SLACK_MCP_TOKEN          # comms
+CLICKUP_MCP_URL / CLICKUP_MCP_TOKEN      # operations
+BIGQUERY_MCP_URL / BIGQUERY_MCP_TOKEN    # finance
+BIRDIE_APPROVAL_MODE=deny                # deny (default, safe) | allow (dev)
+```
+
+Approval gating: outbound/state-changing tool calls route through
+`requestApproval()` in `control-plane/policy.ts`. By default they are denied
+until the workbench approval inbox is wired into that seam.
 
 ```bash
 npm install
