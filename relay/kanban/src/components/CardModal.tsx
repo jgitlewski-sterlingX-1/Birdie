@@ -10,6 +10,7 @@ interface CardModalProps {
   onClose: () => void
   onUpdateCard: (cardId: string, patch: Partial<Card>) => void
   onAddSubtask: (parentId: string, title: string) => void
+  onDelegate: (cardId: string, assigneeId: string, actionItems: string[]) => void
   onDeleteCard: (cardId: string) => void
   onLogApproval: (message: string, externalRef?: string) => void
 }
@@ -22,13 +23,32 @@ export function CardModal({
   onClose,
   onUpdateCard,
   onAddSubtask,
+  onDelegate,
   onDeleteCard,
   onLogApproval,
 }: CardModalProps) {
   const [newTodo, setNewTodo] = useState('')
   const [draft, setDraft] = useState(card.draft ?? '')
+  // Delegation form state
+  const [delegateTo, setDelegateTo] = useState('')
+  const [actionItems, setActionItems] = useState<string[]>([])
+  const [actionInput, setActionInput] = useState('')
 
   const project = useMemo(() => projects.find((p) => p.id === card.projectId), [projects, card.projectId])
+  const assignee = useMemo(() => users.find((u) => u.id === card.assigneeId), [users, card.assigneeId])
+
+  const addActionItem = () => {
+    if (!actionInput.trim()) return
+    setActionItems((items) => [...items, actionInput.trim()])
+    setActionInput('')
+  }
+
+  const submitDelegation = () => {
+    if (!delegateTo) return
+    onDelegate(card.id, delegateTo, actionItems)
+    setActionItems([])
+    setActionInput('')
+  }
 
   const approveGmailDraft = () => {
     if (!draft.trim()) return
@@ -64,7 +84,17 @@ export function CardModal({
           <div className="modal-top">
             <div>
               <h2 style={{ fontSize: 20 }}>{card.title}</h2>
-              {card.summary ? <p style={{ color: '#475569', marginTop: 6 }}>{card.summary}</p> : null}
+              {card.delegatedAt && assignee ? (
+                <span
+                  className="badge"
+                  style={{ color: '#7c3aed', background: '#f3e8ff', marginTop: 6, display: 'inline-block' }}
+                >
+                  Delegated → {assignee.name}
+                </span>
+              ) : null}
+              {card.summary ? (
+                <p style={{ color: '#475569', marginTop: 6, whiteSpace: 'pre-wrap' }}>{card.summary}</p>
+              ) : null}
             </div>
             <button type="button" className="btn btn-ghost" onClick={onClose}>
               Close
@@ -141,22 +171,78 @@ export function CardModal({
 
         <aside className="modal-aside">
           <section className="panel" style={{ padding: 10, display: 'grid', gap: 8 }}>
+            <h3>Delegate</h3>
+            {card.delegatedAt && assignee ? (
+              <div style={{ display: 'grid', gap: 6 }}>
+                <div style={{ fontSize: 13 }}>
+                  Delegated to <strong>{assignee.name}</strong> · keeps showing on your board until the
+                  action items are done.
+                </div>
+                <button
+                  type="button"
+                  className="btn btn-ghost"
+                  onClick={() => onUpdateCard(card.id, { assigneeId: undefined, delegatedAt: undefined })}
+                >
+                  Revoke delegation
+                </button>
+              </div>
+            ) : (
+              <div style={{ display: 'grid', gap: 6 }}>
+                <label>
+                  Assign to another user
+                  <select
+                    value={delegateTo}
+                    onChange={(e) => setDelegateTo(e.target.value)}
+                    style={{ width: '100%', marginTop: 4, border: '1px solid #cbd5e1', borderRadius: 6, padding: 6 }}
+                  >
+                    <option value="">Choose user…</option>
+                    {users.map((u) => (
+                      <option key={u.id} value={u.id}>
+                        {u.name}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+
+                <span style={{ fontWeight: 600, fontSize: 13 }}>Action items</span>
+                {actionItems.length > 0 ? (
+                  <ul style={{ margin: 0, paddingLeft: 18, fontSize: 13, color: '#475569' }}>
+                    {actionItems.map((item, i) => (
+                      <li key={i}>{item}</li>
+                    ))}
+                  </ul>
+                ) : null}
+                <div className="modal-subtask-add">
+                  <input
+                    value={actionInput}
+                    onChange={(e) => setActionInput(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') {
+                        e.preventDefault()
+                        addActionItem()
+                      }
+                    }}
+                    placeholder="Add an action item"
+                    style={{ border: '1px solid #cbd5e1', borderRadius: 6, padding: '6px 8px', flex: 1 }}
+                  />
+                  <button type="button" className="btn btn-ghost" onClick={addActionItem}>
+                    Add
+                  </button>
+                </div>
+                <button
+                  type="button"
+                  className="btn btn-primary"
+                  disabled={!delegateTo}
+                  onClick={submitDelegation}
+                >
+                  Delegate{actionItems.length ? ` with ${actionItems.length} action item${actionItems.length > 1 ? 's' : ''}` : ''}
+                </button>
+              </div>
+            )}
+          </section>
+
+          <section className="panel" style={{ padding: 10, display: 'grid', gap: 8 }}>
             <h3>Details</h3>
-            <label>
-              Assignee
-              <select
-                value={card.assigneeId ?? ''}
-                onChange={(e) => onUpdateCard(card.id, { assigneeId: e.target.value || undefined })}
-                style={{ width: '100%', marginTop: 4, border: '1px solid #cbd5e1', borderRadius: 6, padding: 6 }}
-              >
-                <option value="">Unassigned</option>
-                {users.map((u) => (
-                  <option key={u.id} value={u.id}>
-                    {u.name}
-                  </option>
-                ))}
-              </select>
-            </label>
             <label>
               Project
               <select

@@ -62,6 +62,11 @@ export interface Card {
   draft?: string;
   draftStatus?: DraftStatus;
   completionNotes?: string;
+  // Delegation — set when the card is assigned to another user. The card stays
+  // on the owner's board but is classified as delegated.
+  delegatedAt?: string;
+  // Skill pipeline — which skills ran on this card, base first then customs.
+  skillsApplied?: string[];
 }
 
 export interface Column {

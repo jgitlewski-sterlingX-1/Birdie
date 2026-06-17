@@ -61,11 +61,18 @@ export function CardItem({ card, assignee, project, subtaskCount, onOpen }: Card
           ) : null}
           {subtaskCount > 0 ? <span style={{ color: '#64748b', fontSize: 12 }}>⊟ {subtaskCount}</span> : null}
         </div>
-        {assignee ? (
-          <span className="avatar" style={{ background: assignee.avatarColor }}>
-            {assignee.name.slice(0, 1).toUpperCase()}
-          </span>
-        ) : null}
+        <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+          {card.delegatedAt && assignee ? (
+            <span className="badge" style={{ color: '#7c3aed', background: '#f3e8ff' }}>
+              Delegated
+            </span>
+          ) : null}
+          {assignee ? (
+            <span className="avatar" style={{ background: assignee.avatarColor }}>
+              {assignee.name.slice(0, 1).toUpperCase()}
+            </span>
+          ) : null}
+        </div>
       </div>
     </button>
   )

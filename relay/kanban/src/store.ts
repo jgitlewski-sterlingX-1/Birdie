@@ -123,13 +123,40 @@ export function useBoard() {
     setBoard((b) => {
       const existing = b.cards[cardId];
       if (!existing) return b;
-      const next: Board = {
-        ...b,
-        cards: {
-          ...b.cards,
-          [cardId]: { ...existing, ...patch, updatedAt: new Date().toISOString() },
-        },
+      const now = new Date().toISOString();
+      let cards: Record<string, Card> = {
+        ...b.cards,
+        [cardId]: { ...existing, ...patch, updatedAt: now },
       };
+      let columns = b.columns;
+
+      // When an action item (subtask) completion flips, reconcile the parent:
+      // close it once every action item is done, reopen it if one is unchecked.
+      const updated = cards[cardId];
+      if (updated.parentId && Object.prototype.hasOwnProperty.call(patch, 'completed')) {
+        const parentId = updated.parentId;
+        const parent = cards[parentId];
+        if (parent) {
+          const siblings = Object.values(cards).filter((c) => c.parentId === parentId);
+          const allDone = siblings.length > 0 && siblings.every((c) => c.completed);
+          if (allDone && !parent.completed) {
+            cards = { ...cards, [parentId]: { ...parent, completed: true, updatedAt: now } };
+            // Close it: move to Done.
+            columns = columns.map((c) => ({
+              ...c,
+              cardIds: c.cardIds.filter((id) => id !== parentId),
+            }));
+            columns = columns.map((c) =>
+              c.id === 'col-done' ? { ...c, cardIds: [...c.cardIds, parentId] } : c
+            );
+          } else if (!allDone && parent.completed) {
+            // Other tasks still open — keep the card open.
+            cards = { ...cards, [parentId]: { ...parent, completed: false, updatedAt: now } };
+          }
+        }
+      }
+
+      const next: Board = { ...b, columns, cards };
       saveBoard(next);
       return next;
     });
@@ -216,6 +243,45 @@ export function useBoard() {
     [board]
   );
 
+  // ── Delegation ─────────────────────────────────────────────────────────────
+
+  // Assign a card to another user and (optionally) attach action items for them.
+  // The card stays on the owner's board; the `assigneeId` + `delegatedAt` mark it
+  // as delegated. Action items are created as subtasks assigned to the delegate,
+  // so completing them flows through the same auto-close logic in updateCard.
+  const delegateCard = useCallback(
+    (cardId: string, assigneeId: string, actionItems: string[] = []) => {
+      const now = new Date().toISOString();
+      setBoard((b) => {
+        const existing = b.cards[cardId];
+        if (!existing) return b;
+        const cards: Record<string, Card> = {
+          ...b.cards,
+          [cardId]: { ...existing, assigneeId, delegatedAt: now, updatedAt: now },
+        };
+        for (const title of actionItems) {
+          const trimmed = title.trim();
+          if (!trimmed) continue;
+          const id = uuidv4();
+          cards[id] = {
+            id,
+            title: trimmed,
+            source: 'user',
+            parentId: cardId,
+            assigneeId,
+            completed: false,
+            createdAt: now,
+            updatedAt: now,
+          };
+        }
+        const next: Board = { ...b, cards };
+        saveBoard(next);
+        return next;
+      });
+    },
+    []
+  );
+
   return {
     board,
     update,
@@ -228,5 +294,6 @@ export function useBoard() {
     moveCard,
     addSubtask,
     getSubtasks,
+    delegateCard,
   };
 }

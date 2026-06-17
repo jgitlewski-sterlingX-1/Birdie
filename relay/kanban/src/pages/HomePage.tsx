@@ -14,6 +14,9 @@ interface HomePageProps {
   activeCard: Card | null
   onOpenCard: (id: string) => void
   onCloseCard: () => void
+  onSimulateEmail: () => void
+  onPullInbox: () => void
+  pollStatus: string | null
 }
 
 export function HomePage({
@@ -24,8 +27,11 @@ export function HomePage({
   activeCard,
   onOpenCard,
   onCloseCard,
+  onSimulateEmail,
+  onPullInbox,
+  pollStatus,
 }: HomePageProps) {
-  const { board, addCard, updateCard, deleteCard, addSubtask } = boardStore
+  const { board, addCard, updateCard, deleteCard, addSubtask, delegateCard } = boardStore
 
   const projectsById = useMemo(
     () => Object.fromEntries(projects.map((p) => [p.id, p])),
@@ -42,6 +48,19 @@ export function HomePage({
         <div>
           <div className="page-title">Board</div>
           <div className="page-subtitle">AI triage workspace</div>
+          {pollStatus ? (
+            <div className="page-subtitle" style={{ color: '#64748b', marginTop: 4 }}>
+              {pollStatus}
+            </div>
+          ) : null}
+        </div>
+        <div style={{ display: 'flex', gap: 8 }}>
+          <button type="button" className="btn btn-primary" onClick={onPullInbox}>
+            Pull inbox
+          </button>
+          <button type="button" className="btn btn-ghost" onClick={onSimulateEmail}>
+            Simulate incoming email
+          </button>
         </div>
       </header>
 
@@ -75,6 +94,7 @@ export function HomePage({
           onClose={onCloseCard}
           onUpdateCard={updateCard}
           onAddSubtask={addSubtask}
+          onDelegate={delegateCard}
           onDeleteCard={deleteCard}
           onLogApproval={(message, externalRef) => {
             approvalsStore.addEntry({

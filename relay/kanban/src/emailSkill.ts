@@ -1,6 +1,6 @@
 // src/emailSkill.ts — prototype email skill (heuristic stand-in; replaced by Claude in production)
 
-import type { Card } from './types';
+import type { Card, Skill } from './types';
 
 /**
  * Summarise an email thread. In production, this is a Claude call on the server.
@@ -46,4 +46,30 @@ export function runEmailSkill(card: Card): {
   const summary = summarizeThread(card.emailThread);
   const todoTitles = extractTodos(card.emailThread);
   return { summary, todoTitles };
+}
+
+/**
+ * Email skill pipeline: the base triage skill runs first (summary + to-dos that
+ * affect the user), then any enabled custom email skills run AFTER it, layering
+ * on top without changing the base output.
+ *
+ * In production each step is a Claude call on the server; here the base step is
+ * the heuristic above and custom steps are structural stand-ins that annotate
+ * the summary and record that they ran. This preserves the base-then-custom
+ * ordering so real skill logic can drop in later.
+ */
+export function runEmailPipeline(
+  messages: { from: string; date?: string; body: string }[],
+  customSkills: Skill[]
+): { summary: string; todoTitles: string[]; skillsApplied: string[] } {
+  const todoTitles = extractTodos(messages);
+  let summary = summarizeThread(messages);
+  const skillsApplied = ['base-email-triage'];
+
+  for (const skill of customSkills) {
+    skillsApplied.push(skill.id);
+    summary += `\n\n[custom skill · ${skill.name}] applied after base triage.`;
+  }
+
+  return { summary, todoTitles, skillsApplied };
 }

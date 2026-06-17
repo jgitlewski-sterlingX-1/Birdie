@@ -24,6 +24,13 @@ packages with no shared build:
   in the repo but is not registered. The `relay/` directory still stands on its
   own for that project's frontend.
 
+**Architecture direction:** Birdie is being aligned to Sterling Enterprise's
+*The AI Brain* reference architecture. The distribution layer (capability +
+per-user customization) is git-versioned — per-user customization is a git
+branch, not a database. See
+[docs/ai-brain-alignment.md](docs/ai-brain-alignment.md) for the model and what
+it supersedes. Tracing/eval (the "learning machine") is a separate, later phase.
+
 The two are linked at runtime: the Relay sub-agent
 ([orchestrator/src/agents/relay.ts](orchestrator/src/agents/relay.ts)) reads
 `relay/CLAUDE.md` and `relay/BUILD_SPEC.md` off disk (`../../../relay`, relative
