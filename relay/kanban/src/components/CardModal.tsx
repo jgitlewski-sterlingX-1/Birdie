@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import type { Card, Project, User } from '../types'
 import { simulateCreateDraft } from '../gmail'
 import { generateDraft } from '../draftApi'
+import { useFlags } from '../flags'
 
 interface CardModalProps {
   card: Card
@@ -46,6 +47,8 @@ export function CardModal({
   // Auto-draft state
   const [draftLoading, setDraftLoading] = useState(false)
   const [draftError, setDraftError] = useState<string | null>(null)
+
+  const { has } = useFlags()
 
   const project = useMemo(() => projects.find((p) => p.id === card.projectId), [projects, card.projectId])
   const assignee = useMemo(() => users.find((u) => u.id === card.assigneeId), [users, card.assigneeId])
@@ -94,6 +97,7 @@ export function CardModal({
   // Auto-draft a reply in the user's voice when an email card opens with no draft.
   // The modal is keyed by card id, so this runs once per opened card.
   useEffect(() => {
+    if (!has('voice_drafting')) return
     if (card.source !== 'gmail') return
     if (card.draft || !card.emailThread || card.emailThread.length === 0) return
     const t = window.setTimeout(() => void runDraft(), 0)
@@ -205,14 +209,16 @@ export function CardModal({
             <section className="panel" style={{ padding: 10, display: 'grid', gap: 8 }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                 <h3>Reply composer</h3>
-                <button
-                  type="button"
-                  className="btn btn-ghost"
-                  onClick={() => void runDraft()}
-                  disabled={draftLoading}
-                >
-                  {draftLoading ? 'Drafting…' : draft ? 'Regenerate in my voice' : 'Draft in my voice'}
-                </button>
+                {has('voice_drafting') ? (
+                  <button
+                    type="button"
+                    className="btn btn-ghost"
+                    onClick={() => void runDraft()}
+                    disabled={draftLoading}
+                  >
+                    {draftLoading ? 'Drafting…' : draft ? 'Regenerate in my voice' : 'Draft in my voice'}
+                  </button>
+                ) : null}
               </div>
               {draftLoading ? (
                 <div style={{ fontSize: 12, color: '#64748b' }}>Drafting a reply in your voice…</div>
@@ -237,6 +243,7 @@ export function CardModal({
         </div>
 
         <aside className="modal-aside">
+          {has('card_delegation') ? (
           <section className="panel" style={{ padding: 10, display: 'grid', gap: 8 }}>
             <h3>Delegate</h3>
             {card.delegatedAt && assignee ? (
@@ -307,6 +314,7 @@ export function CardModal({
               </div>
             )}
           </section>
+          ) : null}
 
           <section className="panel" style={{ padding: 10, display: 'grid', gap: 8 }}>
             <h3>Details</h3>
@@ -325,7 +333,8 @@ export function CardModal({
                 ))}
               </select>
             </label>
-            {showNewProject ? (
+            {has('project_create') ? (
+            showNewProject ? (
               <div className="modal-subtask-add">
                 <input
                   value={newProjectName}
@@ -363,7 +372,7 @@ export function CardModal({
               >
                 + New project
               </button>
-            )}
+            )) : null}
             <div style={{ fontSize: 12, color: '#64748b' }}>
               {project ? `Project color: ${project.color}` : 'No project selected'}
             </div>

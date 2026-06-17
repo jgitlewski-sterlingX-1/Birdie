@@ -7,6 +7,7 @@ import { useSkills } from './skillsStore'
 import { useApprovals } from './approvalsStore'
 import { pollNewEmails } from './integrationsApi'
 import { runEmailPipeline } from './emailSkill'
+import { FlagsProvider } from './flags'
 import { Sidebar } from './components/Sidebar'
 import { HomePage } from './pages/HomePage'
 import { ProjectsPage } from './pages/ProjectsPage'
@@ -159,6 +160,7 @@ function AuthenticatedShell() {
   }, [sessionId, pullInbox])
 
   return (
+    <FlagsProvider>
     <div className="app-shell">
       <Sidebar currentView={view} onNavigate={setView} currentUser={currentUser} />
       <main className="main-content">
@@ -191,6 +193,7 @@ function AuthenticatedShell() {
         ) : null}
       </main>
     </div>
+    </FlagsProvider>
   )
 }
 

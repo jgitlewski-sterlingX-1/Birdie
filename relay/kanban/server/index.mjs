@@ -46,6 +46,182 @@ const gmailAccounts = [];
 let defaultGmailAccountEmail = null;
 // In-memory Slack connection (single workspace, like gmailAccounts).
 let slackAccount = null;
+
+// ── Feature flags + roles ──────────────────────────────────────────────────────
+// Stored in MySQL when available; falls back to in-memory defaults otherwise
+// (e.g. local dev with the DB off). Admins are bootstrapped via ADMIN_EMAILS.
+const ADMIN_EMAILS = (process.env.ADMIN_EMAILS || '')
+  .split(',')
+  .map((s) => s.trim().toLowerCase())
+  .filter(Boolean);
+
+const DEFAULT_ROLES = [
+  { name: 'admin', description: 'Full access, manages flags and roles' },
+  { name: 'member', description: 'Standard user' },
+];
+
+// One flag per shippable feature. enabled=false is a kill switch; an empty
+// allowedRoles means "everyone" (when enabled).
+const DEFAULT_FLAGS = [
+  { key: 'slack_integration', name: 'Slack integration', description: 'Connect Slack and triage messages.', enabled: true, allowedRoles: ['admin'] },
+  { key: 'voice_drafting', name: 'Voice reply drafting', description: 'Auto-draft email replies in the user\'s voice.', enabled: true, allowedRoles: ['admin', 'member'] },
+  { key: 'card_delegation', name: 'Card delegation', description: 'Assign cards to others with action items.', enabled: true, allowedRoles: ['admin', 'member'] },
+  { key: 'project_create', name: 'Create project from card', description: 'Create a project inline on a card.', enabled: true, allowedRoles: ['admin', 'member'] },
+  { key: 'integrations_tiles', name: 'Integrations tiles', description: 'Connected-apps tiles in Settings.', enabled: true, allowedRoles: ['admin', 'member'] },
+];
+
+let memFlags = DEFAULT_FLAGS.map((f) => ({ ...f, allowedRoles: [...f.allowedRoles] }));
+let memRoles = DEFAULT_ROLES.map((r) => ({ ...r }));
+const memUserRoles = new Map(); // userId -> string[]
+
+async function initFlagSchema() {
+  if (!dbPool) return;
+  await dbPool.query(`CREATE TABLE IF NOT EXISTS feature_flags (
+    flag_key VARCHAR(128) PRIMARY KEY,
+    name VARCHAR(255) NOT NULL,
+    description TEXT,
+    enabled TINYINT(1) NOT NULL DEFAULT 1,
+    allowed_roles TEXT,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+  )`);
+  await dbPool.query(`CREATE TABLE IF NOT EXISTS roles (
+    name VARCHAR(64) PRIMARY KEY,
+    description VARCHAR(255)
+  )`);
+  await dbPool.query(`CREATE TABLE IF NOT EXISTS user_roles (
+    user_id VARCHAR(64) NOT NULL,
+    role VARCHAR(64) NOT NULL,
+    PRIMARY KEY (user_id, role)
+  )`);
+  // Seed defaults only if empty.
+  const [[{ c: flagCount }]] = await dbPool.query('SELECT COUNT(*) AS c FROM feature_flags');
+  if (flagCount === 0) {
+    for (const f of DEFAULT_FLAGS) {
+      await dbPool.query(
+        'INSERT INTO feature_flags (flag_key, name, description, enabled, allowed_roles) VALUES (?, ?, ?, ?, ?)',
+        [f.key, f.name, f.description, f.enabled ? 1 : 0, JSON.stringify(f.allowedRoles)]
+      );
+    }
+  }
+  const [[{ c: roleCount }]] = await dbPool.query('SELECT COUNT(*) AS c FROM roles');
+  if (roleCount === 0) {
+    for (const r of DEFAULT_ROLES) {
+      await dbPool.query('INSERT INTO roles (name, description) VALUES (?, ?)', [r.name, r.description]);
+    }
+  }
+}
+
+async function getAllFlags() {
+  if (!dbPool) return memFlags.map((f) => ({ ...f, allowedRoles: [...f.allowedRoles] }));
+  const [rows] = await dbPool.query('SELECT flag_key, name, description, enabled, allowed_roles FROM feature_flags ORDER BY flag_key');
+  return rows.map((r) => ({
+    key: r.flag_key,
+    name: r.name,
+    description: r.description,
+    enabled: !!r.enabled,
+    allowedRoles: JSON.parse(r.allowed_roles || '[]'),
+  }));
+}
+
+async function upsertFlag(flag) {
+  if (!dbPool) {
+    const i = memFlags.findIndex((f) => f.key === flag.key);
+    const next = { key: flag.key, name: flag.name, description: flag.description ?? '', enabled: !!flag.enabled, allowedRoles: flag.allowedRoles ?? [] };
+    if (i >= 0) memFlags[i] = next; else memFlags.push(next);
+    return next;
+  }
+  await dbPool.query(
+    `INSERT INTO feature_flags (flag_key, name, description, enabled, allowed_roles)
+     VALUES (?, ?, ?, ?, ?)
+     ON DUPLICATE KEY UPDATE name=VALUES(name), description=VALUES(description), enabled=VALUES(enabled), allowed_roles=VALUES(allowed_roles)`,
+    [flag.key, flag.name, flag.description ?? '', flag.enabled ? 1 : 0, JSON.stringify(flag.allowedRoles ?? [])]
+  );
+  return flag;
+}
+
+async function getRoles() {
+  if (!dbPool) return memRoles.map((r) => ({ ...r }));
+  const [rows] = await dbPool.query('SELECT name, description FROM roles ORDER BY name');
+  return rows;
+}
+
+async function createRole(name, description) {
+  if (!dbPool) {
+    if (!memRoles.some((r) => r.name === name)) memRoles.push({ name, description: description ?? '' });
+    return;
+  }
+  await dbPool.query('INSERT IGNORE INTO roles (name, description) VALUES (?, ?)', [name, description ?? '']);
+}
+
+async function getUserRoles(userId) {
+  if (!dbPool) return memUserRoles.get(userId) ?? [];
+  const [rows] = await dbPool.query('SELECT role FROM user_roles WHERE user_id = ?', [userId]);
+  return rows.map((r) => r.role);
+}
+
+async function setUserRoles(userId, roles) {
+  if (!dbPool) {
+    memUserRoles.set(userId, [...roles]);
+    return;
+  }
+  await dbPool.query('DELETE FROM user_roles WHERE user_id = ?', [userId]);
+  for (const role of roles) {
+    await dbPool.query('INSERT IGNORE INTO user_roles (user_id, role) VALUES (?, ?)', [userId, role]);
+  }
+}
+
+async function listKnownUsers() {
+  if (dbPool) {
+    const [rows] = await dbPool.query('SELECT id, email, name FROM users ORDER BY email');
+    return rows.map((r) => ({ id: String(r.id), email: r.email, name: r.name }));
+  }
+  // In-memory: derive from active sessions.
+  const byId = new Map();
+  for (const s of sessions.values()) {
+    if (s.user?.id) byId.set(String(s.user.id), { id: String(s.user.id), email: s.user.email, name: s.user.name });
+  }
+  return Array.from(byId.values());
+}
+
+function isAdminSession(session) {
+  if (!session?.user) return false;
+  if (ADMIN_EMAILS.includes((session.user.email || '').toLowerCase())) return true;
+  return false; // role-based admin is layered in at evaluation time
+}
+
+async function effectiveRoles(session) {
+  const roles = new Set(await getUserRoles(session.user.id));
+  if (isAdminSession(session)) roles.add('admin');
+  return roles;
+}
+
+async function evaluateFlagsForUser(session) {
+  const roles = await effectiveRoles(session);
+  const isAdmin = roles.has('admin');
+  const flags = await getAllFlags();
+  const evaluated = {};
+  for (const f of flags) {
+    const allowedByRole = f.allowedRoles.length === 0 || isAdmin || f.allowedRoles.some((r) => roles.has(r));
+    evaluated[f.key] = f.enabled && allowedByRole;
+  }
+  return { flags: evaluated, roles: Array.from(roles), isAdmin };
+}
+
+// Resolve a session and require admin; returns the session or sends 401/403.
+async function requireAdmin(req, res) {
+  const sessionId = req.query.sessionId || req.body?.sessionId;
+  const session = getSessionById(sessionId);
+  if (!session) {
+    res.status(401).json({ error: 'Unauthorized session' });
+    return null;
+  }
+  const roles = await effectiveRoles(session);
+  if (!roles.has('admin')) {
+    res.status(403).json({ error: 'Admin role required' });
+    return null;
+  }
+  return session;
+}
 const seenMessageIdsByAccount = new Map();
 
 const dbPool =
@@ -982,7 +1158,74 @@ app.post('/api/email/draft', async (req, res) => {
   }
 });
 
+// ── Feature flag endpoints ──────────────────────────────────────────────────
+
+// Flags evaluated for the calling user (drives client gating).
+app.get('/api/flags', async (req, res) => {
+  const session = getSessionById(req.query.sessionId);
+  if (!session) return res.status(401).json({ error: 'Unauthorized session' });
+  try {
+    res.json(await evaluateFlagsForUser(session));
+  } catch (error) {
+    res.status(500).json({ error: `Failed to evaluate flags: ${error.message}` });
+  }
+});
+
+// Admin: full flag definitions.
+app.get('/api/admin/flags', async (req, res) => {
+  if (!(await requireAdmin(req, res))) return;
+  res.json({ flags: await getAllFlags() });
+});
+
+// Admin: create or update a flag.
+app.put('/api/admin/flags/:key', async (req, res) => {
+  if (!(await requireAdmin(req, res))) return;
+  const { name, description, enabled, allowedRoles } = req.body ?? {};
+  await upsertFlag({
+    key: req.params.key,
+    name: name ?? req.params.key,
+    description: description ?? '',
+    enabled: !!enabled,
+    allowedRoles: Array.isArray(allowedRoles) ? allowedRoles : [],
+  });
+  res.json({ ok: true });
+});
+
+// Admin: roles.
+app.get('/api/admin/roles', async (req, res) => {
+  if (!(await requireAdmin(req, res))) return;
+  res.json({ roles: await getRoles() });
+});
+
+app.post('/api/admin/roles', async (req, res) => {
+  if (!(await requireAdmin(req, res))) return;
+  const { name, description } = req.body ?? {};
+  if (!name) return res.status(400).json({ error: 'Role name is required' });
+  await createRole(name, description);
+  res.json({ ok: true });
+});
+
+// Admin: users + their roles.
+app.get('/api/admin/users', async (req, res) => {
+  if (!(await requireAdmin(req, res))) return;
+  const users = await listKnownUsers();
+  const withRoles = await Promise.all(
+    users.map(async (u) => ({ ...u, roles: await getUserRoles(u.id) }))
+  );
+  res.json({ users: withRoles });
+});
+
+app.put('/api/admin/users/:id/roles', async (req, res) => {
+  if (!(await requireAdmin(req, res))) return;
+  const { roles } = req.body ?? {};
+  await setUserRoles(req.params.id, Array.isArray(roles) ? roles : []);
+  res.json({ ok: true });
+});
+
 app.listen(PORT, () => {
+  if (dbPool) {
+    initFlagSchema().catch((e) => console.error(`[Flags] Schema init failed: ${e.message}`));
+  }
   console.log(`Relay API listening on http://localhost:${PORT}`);
   console.log(`[Config] Allowed domains: ${ALLOWED_DOMAINS.join(', ')}`);
   console.log(`[Config] Allowed origins: ${allowedOrigins.join(', ')}`);

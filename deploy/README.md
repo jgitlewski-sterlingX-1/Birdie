@@ -51,7 +51,25 @@ Public URL: `https://phpstack-1565248-6494558.cloudwaysapps.com`
 6. **SPA**: in Cloudways → Deployment via Git, pull branch `cloudways-deploy`
    into the webroot.
 
-## Redeploys
+## CI/CD (GitHub Actions → Cloudways)
+
+`.github/workflows/deploy.yml` deploys on every push to `main`: it builds the
+SPA, rsyncs it to the webroot, and runs a server-side API redeploy over SSH.
+Add these in the repo's **Settings → Secrets and variables → Actions**:
+
+| Secret | Value |
+|--------|-------|
+| `CLOUDWAYS_SSH_KEY` | Private key whose public half is on the Cloudways server |
+| `CLOUDWAYS_HOST` | Server host/IP |
+| `CLOUDWAYS_USER` | SSH user |
+| `CLOUDWAYS_WEBROOT` | Absolute path to the SPA webroot |
+| `CLOUDWAYS_API_REDEPLOY_CMD` | e.g. `cd ~/relay-api && git fetch origin && git reset --hard origin/main && cd relay/kanban && npm ci --omit=dev && pm2 reload relay-api` |
+
+Releasing is decoupled from deploying: code ships dark and is turned on per role
+in the in-app **Settings → Admin** feature-flag panel. The flag/role tables are
+created automatically by the API on startup (`initFlagSchema`).
+
+## Redeploys (manual fallback)
 
 - **SPA change:** rebuild + push `cloudways-deploy`, then Pull in Cloudways.
 - **API change:** re-run `bash setup-api.sh` (it resets to origin/main and

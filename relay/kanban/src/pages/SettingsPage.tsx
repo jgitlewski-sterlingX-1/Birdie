@@ -4,6 +4,8 @@ import type { useApprovals } from '../approvalsStore'
 import type { SkillCategory } from '../types'
 import { useSession } from '../session'
 import { ApprovalLogView } from '../components/ApprovalLogView'
+import { AdminPanel } from '../components/AdminPanel'
+import { useFlags } from '../flags'
 import {
   disconnectGmail,
   disconnectSlack,
@@ -18,7 +20,7 @@ import {
   type SlackIntegrationStatus,
 } from '../integrationsApi'
 
-type Tab = 'skills' | 'approvals' | 'integrations'
+type Tab = 'skills' | 'approvals' | 'integrations' | 'admin'
 
 interface SettingsPageProps {
   skillsStore: ReturnType<typeof useSkills>
@@ -39,6 +41,7 @@ export function SettingsPage({ skillsStore, approvalsStore }: SettingsPageProps)
   const [loadingIntegration, setLoadingIntegration] = useState(false)
 
   const { currentUser, sessionId } = useSession()
+  const { has, isAdmin } = useFlags()
 
   const loadIntegrationStatus = async () => {
     try {
@@ -185,6 +188,15 @@ export function SettingsPage({ skillsStore, approvalsStore }: SettingsPageProps)
         >
           Integrations
         </button>
+        {isAdmin ? (
+          <button
+            type="button"
+            className={tab === 'admin' ? 'btn btn-primary' : 'btn btn-ghost'}
+            onClick={() => setTab('admin')}
+          >
+            Admin
+          </button>
+        ) : null}
       </div>
 
       {tab === 'skills' ? (
@@ -294,7 +306,7 @@ export function SettingsPage({ skillsStore, approvalsStore }: SettingsPageProps)
         </div>
       ) : tab === 'approvals' ? (
         <ApprovalLogView log={approvalsStore.log} />
-      ) : (
+      ) : tab === 'integrations' ? (
         <div style={{ display: 'grid', gap: 12 }}>
           <section className="panel" style={{ padding: 12 }}>
             <h3 style={{ marginBottom: 8 }}>Connected apps</h3>
@@ -305,7 +317,9 @@ export function SettingsPage({ skillsStore, approvalsStore }: SettingsPageProps)
                 gap: 10,
               }}
             >
-              {integrationTiles.map((tile) => (
+              {integrationTiles
+                .filter((tile) => tile.key !== 'slack' || has('slack_integration'))
+                .map((tile) => (
                 <div
                   key={tile.key}
                   style={{
@@ -512,6 +526,8 @@ export function SettingsPage({ skillsStore, approvalsStore }: SettingsPageProps)
           </div>
         </section>
         </div>
+      ) : (
+        <AdminPanel />
       )}
     </div>
   )

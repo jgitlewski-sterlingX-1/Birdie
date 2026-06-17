@@ -1,0 +1,61 @@
+name: Deploy to production
+
+# Push to main → build the SPA and deploy both the SPA and the API to Cloudways.
+# Shipping is decoupled from releasing: code can land dark and be turned on per
+# role in the in-app feature-flag admin panel.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch: {}
+
+# Never run two production deploys at once.
+concurrency:
+  group: production-deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Build SPA
+        working-directory: relay/kanban
+        run: |
+          npm ci
+          npm run build
+
+      - name: Configure SSH
+        run: |
+          mkdir -p ~/.ssh
+          printf '%s\n' "${{ secrets.CLOUDWAYS_SSH_KEY }}" > ~/.ssh/id_deploy
+          chmod 600 ~/.ssh/id_deploy
+          ssh-keyscan -H "${{ secrets.CLOUDWAYS_HOST }}" >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Deploy SPA to webroot
+        # Sync the built bundle straight into the Cloudways webroot.
+        # --delete keeps old hashed assets from piling up; the webroot should
+        # contain only the built SPA.
+        run: |
+          rsync -az --delete \
+            -e "ssh -i ~/.ssh/id_deploy" \
+            relay/kanban/dist/ \
+            "${{ secrets.CLOUDWAYS_USER }}@${{ secrets.CLOUDWAYS_HOST }}:${{ secrets.CLOUDWAYS_WEBROOT }}/"
+
+      - name: Redeploy API
+        # Runs the server-side redeploy command (resets the API checkout to
+        # origin/main, installs runtime deps, reloads pm2). Set the exact command
+        # for your server layout in the CLOUDWAYS_API_REDEPLOY_CMD secret, e.g.:
+        #   cd ~/relay-api && git fetch origin && git reset --hard origin/main \
+        #     && cd relay/kanban && npm ci --omit=dev && pm2 reload relay-api
+        run: |
+          ssh -i ~/.ssh/id_deploy \
+            "${{ secrets.CLOUDWAYS_USER }}@${{ secrets.CLOUDWAYS_HOST }}" \
+            "${{ secrets.CLOUDWAYS_API_REDEPLOY_CMD }}"
