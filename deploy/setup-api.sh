@@ -21,9 +21,17 @@ else
   git clone --branch main --depth 1 "$REPO" "$SRC_DIR"
 fi
 
+# Load nvm if present (Cloudways non-interactive SSH doesn't auto-source it).
+if [ -s "$HOME/.nvm/nvm.sh" ]; then
+  export NVM_DIR="$HOME/.nvm"
+  # shellcheck disable=SC1090
+  . "$HOME/.nvm/nvm.sh"
+fi
+
 cd "$APP_DIR"
 
-# 2. Install only runtime deps (express, cors, googleapis, uuid, dotenv).
+# 2. Install only runtime deps (express, cors, googleapis, mysql2, uuid, dotenv).
+#    The `prepare` hook is `husky || true`, so this won't fail without devDeps.
 echo "==> Installing dependencies"
 npm install --omit=dev --no-audit --no-fund
 
@@ -33,17 +41,22 @@ if [ ! -f "$APP_DIR/.env" ]; then
   exit 1
 fi
 
-# 4. Start (or reload) under pm2 — installed locally to avoid global perms.
-if [ ! -x "$APP_DIR/node_modules/.bin/pm2" ]; then
-  echo "==> Installing pm2 locally"
-  npm install pm2 --no-audit --no-fund
+# 4. pm2 is installed GLOBALLY (not in package.json), so a local `npm install`
+#    can't prune it. Use an isolated PM2_HOME so this app's daemon never clashes
+#    with other apps' pm2 on a shared server.
+if ! command -v pm2 >/dev/null 2>&1; then
+  echo "==> Installing pm2 globally"
+  npm install -g pm2 --ignore-scripts --no-audit --no-fund
 fi
-PM2="$APP_DIR/node_modules/.bin/pm2"
+export PM2_HOME="$HOME/.pm2-relay"
 
-echo "==> Starting API under pm2"
-"$PM2" delete relay-api >/dev/null 2>&1 || true
-"$PM2" start server/index.mjs --name relay-api
-"$PM2" save
+echo "==> Starting/reloading API under pm2"
+pm2 reload relay-api 2>/dev/null || pm2 start server/index.mjs --name relay-api --time
+pm2 save
+
+# 5. Schema: the API auto-creates all tables on startup when MYSQL_* is set
+#    (ensureCoreSchema + initFlagSchema). To pre-provision the database itself,
+#    run once:  npm run db:init
 
 echo "==> Done. API should be live on 127.0.0.1:${RELAY_API_PORT:-8787}"
 echo "    Check:  curl -s http://127.0.0.1:8787/api/auth/session | head"

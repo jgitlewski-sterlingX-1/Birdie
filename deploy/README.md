@@ -63,7 +63,18 @@ Add these in the repo's **Settings → Secrets and variables → Actions**:
 | `CLOUDWAYS_HOST` | Server host/IP |
 | `CLOUDWAYS_USER` | SSH user |
 | `CLOUDWAYS_WEBROOT` | Absolute path to the SPA webroot |
-| `CLOUDWAYS_API_REDEPLOY_CMD` | e.g. `cd ~/relay-api && git fetch origin && git reset --hard origin/main && cd relay/kanban && npm ci --omit=dev && pm2 reload relay-api` |
+| `CLOUDWAYS_API_REDEPLOY_CMD` | see below |
+
+Redeploy command (non-interactive SSH must source nvm; `prepare` is `husky \|\| true`
+so `--omit=dev` won't break on the missing husky devDep; `pm2` is global so a local
+install can't prune it; the API uses an isolated `PM2_HOME`):
+
+```bash
+export NVM_DIR=$HOME/.nvm && . $HOME/.nvm/nvm.sh && \
+cd ~/relay-api && git fetch origin && git reset --hard origin/main && \
+cd relay/kanban && npm ci --omit=dev && \
+PM2_HOME=$HOME/.pm2-relay pm2 reload relay-api
+```
 
 Releasing is decoupled from deploying: code ships dark and is turned on per role
 in the in-app **Settings → Admin** feature-flag panel.
@@ -87,8 +98,19 @@ its in-memory fallback (state resets on restart).
 
 ## Notes / known issues
 
-- pm2 reboot-persistence (`pm2 startup`) needs sudo; `pm2 save` covers manual
-  restarts. Configure startup with master creds if reboot survival is required.
+- **pm2 is installed globally**, not in `package.json`. A local `npm install`
+  prunes anything not in `package.json`, so a locally-installed pm2 would vanish
+  on every redeploy — hence global. The API runs under an isolated
+  `PM2_HOME=$HOME/.pm2-relay` so its daemon never clashes with other apps' pm2
+  on the shared server.
+- **`prepare` is `husky || true`.** husky is a devDep; under `--omit=dev` it
+  isn't installed, and a bare `husky` in `prepare` would exit non-zero and abort
+  the whole install. The `|| true` makes prod installs (and CI `npm ci`) safe.
+- **Node version:** npm's global prefix points at Node 18, so pm2 lives there;
+  the API runs fine on 18. If you switch the runtime, reinstall pm2 globally for
+  that version.
+- pm2 reboot-persistence (`pm2 startup`) needs sudo; instead an `@reboot` cron
+  (`~/relay-api/pm2-boot.sh`) runs `pm2 resurrect`. `pm2 save` keeps the dump current.
 - `getOAuthClient()` shares `GMAIL_REDIRECT_URI` for both the login flow and the
   Settings → "Connect Gmail" flow. It's set to the **login** callback, so the
   login gate works; the Gmail-connect button in Settings would need its own

@@ -14,7 +14,7 @@
     "verify": "npm run build && npm run test",
     "lint": "eslint .",
     "preview": "vite preview",
-    "prepare": "husky"
+    "prepare": "husky || true"
   },
   "dependencies": {
     "@hello-pangea/dnd": "^18.0.1",
