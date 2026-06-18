@@ -50,14 +50,19 @@ jobs:
           ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts 2>/dev/null
 
       - name: Deploy SPA to webroot
-        # Sync the built bundle into the Cloudways webroot. --delete prunes old
-        # hashed assets; .htaccess is preserved in case it carries SPA routing.
+        # Sync the built bundle into the Cloudways webroot. Use -rlz, NOT -a:
+        # the webroot is owned by the app user (vzsqbwuspy) while the deploy user
+        # (master) is only a group member, so preserving times/perms/owner (-a)
+        # fails with "rsync: failed to set times ... Operation not permitted".
+        # -rlz transfers content + structure without those attributes. --delete
+        # prunes old hashed assets; index.php (the /api front-controller) ships
+        # inside dist/, so it is synced and preserved.
         env:
           DEPLOY_USER: ${{ secrets.CLOUDWAYS_USER }}
           DEPLOY_HOST: ${{ secrets.CLOUDWAYS_HOST }}
           DEPLOY_WEBROOT: ${{ secrets.CLOUDWAYS_WEBROOT }}
         run: |
-          rsync -az --delete --exclude='.htaccess' \
+          rsync -rlz --delete --exclude='.htaccess' \
             -e "ssh -i ~/.ssh/id_deploy" \
             relay/kanban/dist/ \
             "$DEPLOY_USER@$DEPLOY_HOST:$DEPLOY_WEBROOT/"
