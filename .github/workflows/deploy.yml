@@ -32,30 +32,42 @@ jobs:
           npm ci
           npm run build
 
+      # Secrets are passed via env (not inline) so the runner's shell never
+      # expands values — critical for the redeploy command, whose $HOME must
+      # expand on the SERVER, not the runner.
       - name: Configure SSH
+        env:
+          SSH_KEY: ${{ secrets.CLOUDWAYS_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.CLOUDWAYS_HOST }}
         run: |
+          if [ -z "$SSH_KEY" ] || [ -z "$DEPLOY_HOST" ]; then
+            echo "::error::Deploy secrets missing (CLOUDWAYS_SSH_KEY / CLOUDWAYS_HOST). Set them in repo Settings → Secrets." >&2
+            exit 1
+          fi
           mkdir -p ~/.ssh
-          printf '%s\n' "${{ secrets.CLOUDWAYS_SSH_KEY }}" > ~/.ssh/id_deploy
+          printf '%s\n' "$SSH_KEY" > ~/.ssh/id_deploy
           chmod 600 ~/.ssh/id_deploy
-          ssh-keyscan -H "${{ secrets.CLOUDWAYS_HOST }}" >> ~/.ssh/known_hosts 2>/dev/null
+          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts 2>/dev/null
 
       - name: Deploy SPA to webroot
-        # Sync the built bundle straight into the Cloudways webroot.
-        # --delete keeps old hashed assets from piling up; the webroot should
-        # contain only the built SPA.
+        # Sync the built bundle into the Cloudways webroot. --delete prunes old
+        # hashed assets; .htaccess is preserved in case it carries SPA routing.
+        env:
+          DEPLOY_USER: ${{ secrets.CLOUDWAYS_USER }}
+          DEPLOY_HOST: ${{ secrets.CLOUDWAYS_HOST }}
+          DEPLOY_WEBROOT: ${{ secrets.CLOUDWAYS_WEBROOT }}
         run: |
-          rsync -az --delete \
+          rsync -az --delete --exclude='.htaccess' \
             -e "ssh -i ~/.ssh/id_deploy" \
             relay/kanban/dist/ \
-            "${{ secrets.CLOUDWAYS_USER }}@${{ secrets.CLOUDWAYS_HOST }}:${{ secrets.CLOUDWAYS_WEBROOT }}/"
+            "$DEPLOY_USER@$DEPLOY_HOST:$DEPLOY_WEBROOT/"
 
       - name: Redeploy API
-        # Runs the server-side redeploy command (resets the API checkout to
-        # origin/main, installs runtime deps, reloads pm2). Set the exact command
-        # for your server layout in the CLOUDWAYS_API_REDEPLOY_CMD secret, e.g.:
-        #   cd ~/relay-api && git fetch origin && git reset --hard origin/main \
-        #     && cd relay/kanban && npm ci --omit=dev && pm2 reload relay-api
+        # Server-side redeploy (reset API checkout to origin/main, install runtime
+        # deps, reload pm2). $HOME in the command expands on the server.
+        env:
+          DEPLOY_USER: ${{ secrets.CLOUDWAYS_USER }}
+          DEPLOY_HOST: ${{ secrets.CLOUDWAYS_HOST }}
+          REDEPLOY_CMD: ${{ secrets.CLOUDWAYS_API_REDEPLOY_CMD }}
         run: |
-          ssh -i ~/.ssh/id_deploy \
-            "${{ secrets.CLOUDWAYS_USER }}@${{ secrets.CLOUDWAYS_HOST }}" \
-            "${{ secrets.CLOUDWAYS_API_REDEPLOY_CMD }}"
+          ssh -i ~/.ssh/id_deploy "$DEPLOY_USER@$DEPLOY_HOST" "$REDEPLOY_CMD"
