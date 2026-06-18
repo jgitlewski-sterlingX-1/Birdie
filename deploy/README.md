@@ -1,14 +1,19 @@
 # Relay — Cloudways deployment runbook
 
-The Cloudways app is a **PHP stack**, so the static SPA and the Node API are
-deployed separately on the same server and stitched together with an Nginx
-reverse proxy:
+The Cloudways app is an **Nginx + PHP-FPM stack** with **no sudo and no Nginx
+`/api` reverse proxy available**. The SPA and the Node API are stitched together
+by a **PHP front-controller** instead:
 
-- **SPA** → Git-deployed branch `cloudways-deploy` → served from the webroot.
-- **API** → Node/Express (`relay/kanban/server/index.mjs`) run under pm2 on
-  `127.0.0.1:8787`, fronted by Nginx at `/api`.
+- **SPA** → built bundle (`relay/kanban/dist/`) → served from the webroot.
+- **API** → Node/Express (`relay/kanban/server/index.mjs`) under pm2 on
+  `127.0.0.1:8787`.
+- **`public/index.php`** (built into `dist/`) reverse-proxies `/api/*` to the
+  local Node API and serves `index.html` for everything else.
 
 Same origin means the SPA's relative `/api/...` fetches work with no code change.
+**`index.php` must stay in the deployed bundle** — it *is* the `/api` routing on
+this stack (there is no Apache/`.htaccess` and no Nginx proxy). Because it lives
+in `public/`, Vite includes it in `dist/`, so `rsync --delete` preserves it.
 
 Public URL: `https://phpstack-1565248-6494558.cloudwaysapps.com`
 
@@ -45,11 +50,13 @@ Public URL: `https://phpstack-1565248-6494558.cloudwaysapps.com`
 4. **Bootstrap the API**: `bash setup-api.sh` (clones main, installs runtime
    deps, starts `relay-api` under pm2).
 
-5. **Nginx proxy**: add the block from [nginx-api-proxy.conf](nginx-api-proxy.conf)
-   into the app's vhost, then `sudo nginx -t && sudo service nginx reload`.
+5. **`/api` routing**: handled by `public/index.php`, which is built into the SPA
+   bundle and deployed with it — **no Nginx/sudo step required** on this stack.
+   ([nginx-api-proxy.conf](nginx-api-proxy.conf) is only relevant if you ever gain
+   real Nginx vhost access; the PHP front-controller is the supported path here.)
 
-6. **SPA**: in Cloudways → Deployment via Git, pull branch `cloudways-deploy`
-   into the webroot.
+6. **SPA**: handled by CI (below) — it builds `dist/` and rsyncs it (including
+   `index.php`) into the webroot.
 
 ## CI/CD (GitHub Actions → Cloudways)
 
@@ -96,9 +103,10 @@ its in-memory fallback (state resets on restart).
 
 ## Redeploys (manual fallback)
 
-- **SPA change:** rebuild + push `cloudways-deploy`, then Pull in Cloudways.
-- **API change:** re-run `bash setup-api.sh` (it resets to origin/main and
-  reloads pm2).
+- **SPA change:** push to `main` (CI builds + rsyncs `dist/`, including
+  `index.php`). Manual: `npm run build` then rsync `dist/` to the webroot.
+- **API change:** push to `main` (CI runs the redeploy command). Manual: re-run
+  `bash setup-api.sh` (resets to origin/main, installs deps, reloads pm2).
 
 ## Notes / known issues
 
