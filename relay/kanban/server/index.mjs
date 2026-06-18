@@ -65,7 +65,7 @@ const DEFAULT_ROLES = [
 // allowedRoles means "everyone" (when enabled).
 const DEFAULT_FLAGS = [
   { key: 'slack_integration', name: 'Slack integration', description: 'Connect Slack and triage messages.', enabled: true, allowedRoles: ['admin'] },
-  { key: 'voice_drafting', name: 'Voice reply drafting', description: 'Auto-draft email replies in the user\'s voice.', enabled: true, allowedRoles: ['admin', 'member'] },
+  { key: 'voice_drafting', name: 'Voice reply drafting', description: 'Auto-draft email replies in the user\'s voice. Requires ANTHROPIC_API_KEY — keep OFF until that is set, then enable here.', enabled: false, allowedRoles: ['admin', 'member'] },
   { key: 'card_delegation', name: 'Card delegation', description: 'Assign cards to others with action items.', enabled: true, allowedRoles: ['admin', 'member'] },
   { key: 'project_create', name: 'Create project from card', description: 'Create a project inline on a card.', enabled: true, allowedRoles: ['admin', 'member'] },
   { key: 'integrations_tiles', name: 'Integrations tiles', description: 'Connected-apps tiles in Settings.', enabled: true, allowedRoles: ['admin', 'member'] },
