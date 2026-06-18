@@ -70,11 +70,15 @@ so `--omit=dev` won't break on the missing husky devDep; `pm2` is global so a lo
 install can't prune it; the API uses an isolated `PM2_HOME`):
 
 ```bash
-export NVM_DIR=$HOME/.nvm && . $HOME/.nvm/nvm.sh && \
+export NVM_DIR=$HOME/.nvm && . $HOME/.nvm/nvm.sh && nvm use 18 >/dev/null && \
 cd ~/relay-api && git fetch origin && git reset --hard origin/main && \
 cd relay/kanban && npm ci --omit=dev && \
 PM2_HOME=$HOME/.pm2-relay pm2 reload relay-api
 ```
+
+`nvm use 18` is required: npm's global prefix (where pm2 lives) is pinned to
+Node 18, so pm2 is only on `PATH` under that version. Verified end-to-end on the
+server.
 
 Releasing is decoupled from deploying: code ships dark and is turned on per role
 in the in-app **Settings → Admin** feature-flag panel.
