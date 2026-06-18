@@ -5,6 +5,7 @@ import type { useApprovals } from '../approvalsStore'
 import { USERS } from '../users'
 import { ColumnView } from '../components/ColumnView'
 import { CardModal } from '../components/CardModal'
+import { useFlags } from '../flags'
 
 interface HomePageProps {
   boardStore: ReturnType<typeof useBoard>
@@ -15,6 +16,7 @@ interface HomePageProps {
   onOpenCard: (id: string) => void
   onCloseCard: () => void
   onSimulateEmail: () => void
+  onSimulateSlack: () => void
   onPullInbox: () => void
   pollStatus: string | null
   onCreateProject: (name: string, description?: string) => string
@@ -31,6 +33,7 @@ export function HomePage({
   onOpenCard,
   onCloseCard,
   onSimulateEmail,
+  onSimulateSlack,
   onPullInbox,
   pollStatus,
   onCreateProject,
@@ -38,6 +41,7 @@ export function HomePage({
   voiceInstructions,
 }: HomePageProps) {
   const { board, addCard, updateCard, deleteCard, addSubtask, delegateCard } = boardStore
+  const { has } = useFlags()
 
   const projectsById = useMemo(
     () => Object.fromEntries(projects.map((p) => [p.id, p])),
@@ -67,6 +71,11 @@ export function HomePage({
           <button type="button" className="btn btn-ghost" onClick={onSimulateEmail}>
             Simulate incoming email
           </button>
+          {has('slack_integration') ? (
+            <button type="button" className="btn btn-ghost" onClick={onSimulateSlack}>
+              Simulate Slack message
+            </button>
+          ) : null}
         </div>
       </header>
 

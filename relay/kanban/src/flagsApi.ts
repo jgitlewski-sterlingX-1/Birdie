@@ -17,6 +17,9 @@ export interface AdminUser {
   id: string;
   email: string;
   name: string;
+  domain?: string | null;
+  createdAt?: string | null;
+  lastLoginAt?: string | null;
   roles: string[];
 }
 

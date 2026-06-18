@@ -159,7 +159,11 @@ export function AdminPanel() {
           {users.map((u) => (
             <div key={u.id} style={box}>
               <div style={{ fontWeight: 600, fontSize: 13 }}>{u.name}</div>
-              <div style={{ color: '#64748b', fontSize: 12, marginBottom: 6 }}>{u.email}</div>
+              <div style={{ color: '#64748b', fontSize: 12 }}>{u.email}</div>
+              <div style={{ color: '#94a3b8', fontSize: 11, marginBottom: 6 }}>
+                {u.domain ? `${u.domain} · ` : ''}
+                {u.lastLoginAt ? `last login ${new Date(u.lastLoginAt).toLocaleString()}` : 'no login record'}
+              </div>
               <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
                 {roles.map((r) => (
                   <label key={r.name} style={{ display: 'flex', gap: 4, alignItems: 'center', fontSize: 13 }}>

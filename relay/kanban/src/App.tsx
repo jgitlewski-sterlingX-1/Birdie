@@ -5,8 +5,9 @@ import { useBoard } from './store'
 import { useProjects } from './projectsStore'
 import { useSkills } from './skillsStore'
 import { useApprovals } from './approvalsStore'
-import { pollNewEmails } from './integrationsApi'
+import { pollNewEmails, pollSlackMessages } from './integrationsApi'
 import { runEmailPipeline } from './emailSkill'
+import { runSlackPipeline } from './slackSkill'
 import { FlagsProvider } from './flags'
 import { Sidebar } from './components/Sidebar'
 import { HomePage } from './pages/HomePage'
@@ -40,6 +41,21 @@ const SAMPLE_EMAIL: IncomingEmail = {
     'Let me know if you have any questions. Thanks, Pat',
   messageId: `demo-${Math.random().toString(36).slice(2, 10)}`,
   threadId: `demo-thread-${Math.random().toString(36).slice(2, 10)}`,
+}
+
+interface IncomingSlackMessage {
+  messageId: string
+  from: string
+  text: string
+  permalink?: string | null
+}
+
+// Demo Slack message for the "Simulate Slack message" button (testable without
+// a live Slack connection).
+const SAMPLE_SLACK: IncomingSlackMessage = {
+  messageId: `demo-slack-${Math.random().toString(36).slice(2, 10)}`,
+  from: 'Alex Rivera',
+  text: 'Hey — can you review the Q3 deck before our 2pm and send me your edits? Also please confirm the client call time.',
 }
 
 function AuthenticatedShell() {
@@ -159,6 +175,55 @@ function AuthenticatedShell() {
     }
   }, [sessionId, pullInbox])
 
+  // Turn a Slack message into a card, then run the Slack triage pipeline.
+  const ingestSlackCard = useCallback(
+    (msg: IncomingSlackMessage) => {
+      const title = msg.text.trim().slice(0, 60) || `Slack from ${msg.from}`
+      const cardId = addCard('col-new', {
+        title,
+        description: msg.text,
+        source: 'slack',
+        provider: 'slack',
+        externalId: msg.messageId,
+        client: { name: msg.from },
+        sourceUrl: msg.permalink ?? undefined,
+      })
+      const slackSkills = skillsRef.current.filter((s) => s.category === 'slack' && s.enabled)
+      const { summary, todoTitles, skillsApplied } = runSlackPipeline(msg.text, slackSkills)
+      updateCard(cardId, { summary, todosExtracted: true, skillsApplied })
+      todoTitles.forEach((t) => addSubtask(cardId, t))
+      return cardId
+    },
+    [addCard, updateCard, addSubtask]
+  )
+
+  // Poll Slack and ingest messages not already on the board. Inert (empty) when
+  // Slack isn't connected — the server returns no messages.
+  const pullSlack = useCallback(async () => {
+    if (!sessionId) return
+    try {
+      const msgs = await pollSlackMessages(sessionId)
+      const existing = new Set(
+        Object.values(boardRef.current.cards).map((c) => c.externalId).filter(Boolean)
+      )
+      const fresh = msgs.filter((m) => !existing.has(m.messageId))
+      fresh.forEach((m) => ingestSlackCard(m))
+      if (fresh.length) setPollStatus(`Pulled ${fresh.length} Slack message(s).`)
+    } catch (error) {
+      setPollStatus(`Slack pull failed: ${error instanceof Error ? error.message : 'error'}`)
+    }
+  }, [sessionId, ingestSlackCard])
+
+  useEffect(() => {
+    if (!sessionId) return
+    const initial = window.setTimeout(() => void pullSlack(), 0)
+    const timer = window.setInterval(() => void pullSlack(), 30000)
+    return () => {
+      window.clearTimeout(initial)
+      window.clearInterval(timer)
+    }
+  }, [sessionId, pullSlack])
+
   return (
     <FlagsProvider>
     <div className="app-shell">
@@ -174,6 +239,7 @@ function AuthenticatedShell() {
             onOpenCard={setActiveCardId}
             onCloseCard={() => setActiveCardId(null)}
             onSimulateEmail={() => ingestEmailCard(SAMPLE_EMAIL)}
+            onSimulateSlack={() => ingestSlackCard(SAMPLE_SLACK)}
             onPullInbox={pullInbox}
             pollStatus={pollStatus}
             onCreateProject={projectsStore.addProject}

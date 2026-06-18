@@ -171,15 +171,40 @@ async function setUserRoles(userId, roles) {
   }
 }
 
+// Assign the default 'member' role on first login (when the user has no roles).
+async function ensureDefaultRole(userId) {
+  const existing = await getUserRoles(userId);
+  if (existing.length === 0) {
+    await setUserRoles(userId, ['member']);
+  }
+}
+
 async function listKnownUsers() {
   if (dbPool) {
-    const [rows] = await dbPool.query('SELECT id, email, name FROM users ORDER BY email');
-    return rows.map((r) => ({ id: String(r.id), email: r.email, name: r.name }));
+    const [rows] = await dbPool.query(
+      'SELECT id, email, name, domain, created_at, last_login_at FROM users ORDER BY email'
+    );
+    return rows.map((r) => ({
+      id: String(r.id),
+      email: r.email,
+      name: r.name,
+      domain: r.domain,
+      createdAt: r.created_at,
+      lastLoginAt: r.last_login_at,
+    }));
   }
-  // In-memory: derive from active sessions.
+  // In-memory fallback: derive from active sessions (no persisted history).
   const byId = new Map();
   for (const s of sessions.values()) {
-    if (s.user?.id) byId.set(String(s.user.id), { id: String(s.user.id), email: s.user.email, name: s.user.name });
+    if (s.user?.id)
+      byId.set(String(s.user.id), {
+        id: String(s.user.id),
+        email: s.user.email,
+        name: s.user.name,
+        domain: s.user.domain ?? null,
+        createdAt: null,
+        lastLoginAt: null,
+      });
   }
   return Array.from(byId.values());
 }
@@ -498,6 +523,13 @@ app.get('/api/auth/callback', async (req, res) => {
       name,
       domain: emailDomain,
     });
+
+    // First login → ensure the user has at least the default 'member' role.
+    try {
+      await ensureDefaultRole(appUser.id);
+    } catch (roleErr) {
+      console.error(`[Auth] ensureDefaultRole failed: ${roleErr.message}`);
+    }
 
     // Create session
     const sessionId = uuidv4();
@@ -1088,6 +1120,80 @@ app.get('/api/integrations/slack/callback', async (req, res) => {
 app.post('/api/integrations/slack/disconnect', (_req, res) => {
   slackAccount = null;
   res.json({ ok: true });
+});
+
+// Slack Web API helper (GET with the user's bearer token).
+async function slackApi(method, token, params = {}) {
+  const url = new URL(`https://slack.com/api/${method}`);
+  for (const [k, v] of Object.entries(params)) url.searchParams.set(k, String(v));
+  const r = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
+  return r.json();
+}
+
+const seenSlackKeys = new Set();
+
+// Poll Slack for recent messages that mention the user — the triage source for
+// Slack cards (the analog of the Gmail inbox poll). Uses search.messages so it
+// needs only search:read + users:read.
+app.get('/api/slack/poll', async (req, res) => {
+  const session = getSessionById(req.query.sessionId);
+  if (!session) return res.status(401).json({ error: 'Unauthorized session' });
+  if (!slackAccount?.accessToken) return res.json({ messages: [] });
+
+  const token = slackAccount.accessToken;
+  try {
+    if (!slackAccount.handle && slackAccount.userId) {
+      const info = await slackApi('users.info', token, { user: slackAccount.userId });
+      slackAccount.handle = info.ok
+        ? info.user?.profile?.display_name || info.user?.name || null
+        : null;
+    }
+    const handle = slackAccount.handle;
+    if (!handle) return res.json({ messages: [] });
+
+    const search = await slackApi('search.messages', token, {
+      query: handle,
+      sort: 'timestamp',
+      count: 20,
+    });
+    if (!search.ok) {
+      console.error(`[Slack poll] ${search.error}`);
+      return res.status(502).json({ error: `Slack: ${search.error}` });
+    }
+
+    const matches = search.messages?.matches ?? [];
+    const nameCache = new Map();
+    const out = [];
+    for (const m of matches) {
+      const key = `${m.channel?.id ?? '?'}:${m.ts}`;
+      if (seenSlackKeys.has(key)) continue;
+      seenSlackKeys.add(key);
+
+      let from = m.username || m.user || 'unknown';
+      if (m.user) {
+        if (!nameCache.has(m.user)) {
+          const ui = await slackApi('users.info', token, { user: m.user });
+          nameCache.set(m.user, ui.ok ? ui.user?.real_name || ui.user?.name || m.user : m.user);
+        }
+        from = nameCache.get(m.user);
+      }
+
+      out.push({
+        messageId: key,
+        channelId: m.channel?.id ?? null,
+        channelName: m.channel?.name ?? null,
+        from,
+        text: m.text || '',
+        ts: m.ts,
+        permalink: m.permalink ?? null,
+      });
+    }
+    return res.json({ messages: out });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Unknown Slack poll error';
+    console.error(`[Slack poll] Error: ${message}`);
+    return res.status(500).json({ error: `Failed to poll Slack: ${message}` });
+  }
 });
 
 // Draft an email reply in the user's voice via Claude.

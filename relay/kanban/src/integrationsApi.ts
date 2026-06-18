@@ -134,6 +134,26 @@ export async function setDefaultGmailAccount(accountEmail: string): Promise<void
   }
 }
 
+export interface PolledSlackMessage {
+  messageId: string;
+  channelId?: string | null;
+  channelName?: string | null;
+  from: string;
+  text: string;
+  ts: string;
+  permalink?: string | null;
+}
+
+export async function pollSlackMessages(sessionId: string): Promise<PolledSlackMessage[]> {
+  const res = await apiFetch(`/api/slack/poll?sessionId=${encodeURIComponent(sessionId)}`);
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({ error: 'Failed to poll Slack' }));
+    throw new Error(data.error || 'Failed to poll Slack');
+  }
+  const data = (await res.json()) as { messages: PolledSlackMessage[] };
+  return data.messages ?? [];
+}
+
 export async function pollNewEmails(sessionId: string): Promise<PolledEmail[]> {
   const res = await apiFetch(`/api/email/poll?sessionId=${encodeURIComponent(sessionId)}`);
   if (!res.ok) {
