@@ -110,9 +110,12 @@ its in-memory fallback (state resets on restart).
 - **`prepare` is `husky || true`.** husky is a devDep; under `--omit=dev` it
   isn't installed, and a bare `husky` in `prepare` would exit non-zero and abort
   the whole install. The `|| true` makes prod installs (and CI `npm ci`) safe.
-- **Node version:** npm's global prefix points at Node 18, so pm2 lives there;
-  the API runs fine on 18. If you switch the runtime, reinstall pm2 globally for
-  that version.
+- **Node version:** the API **requires Node 20+** — `google-auth-library`'s
+  ID-token verification uses the global Web Crypto API, which Node <20 doesn't
+  expose by default (running on Node 18 throws `crypto is not defined` in the
+  OAuth callback). pm2 itself runs under the Node-18 global prefix, so the app is
+  started with `--interpreter <node20>` (see `setup-api.sh`); `pm2 reload`
+  preserves that interpreter. `package.json` declares `engines.node >=20`.
 - pm2 reboot-persistence (`pm2 startup`) needs sudo; instead an `@reboot` cron
   (`~/relay-api/pm2-boot.sh`) runs `pm2 resurrect`. `pm2 save` keeps the dump current.
 - `getOAuthClient()` shares `GMAIL_REDIRECT_URI` for both the login flow and the

@@ -50,8 +50,15 @@ if ! command -v pm2 >/dev/null 2>&1; then
 fi
 export PM2_HOME="$HOME/.pm2-relay"
 
-echo "==> Starting/reloading API under pm2"
-pm2 reload relay-api 2>/dev/null || pm2 start server/index.mjs --name relay-api --time
+# The app requires Node 20+: google-auth-library's ID-token verification uses
+# the global Web Crypto API, which Node <20 doesn't expose by default (causes
+# "crypto is not defined" in the OAuth callback). Run the app under Node 20 even
+# if pm2 itself runs under another version. (pm2 reload keeps the existing
+# interpreter, so --interpreter only applies on first start.)
+NODE20="$(nvm which 20 2>/dev/null || command -v node)"
+
+echo "==> Starting/reloading API under pm2 (interpreter: $NODE20)"
+pm2 reload relay-api 2>/dev/null || pm2 start server/index.mjs --name relay-api --interpreter "$NODE20" --time
 pm2 save
 
 # 5. Schema: the API auto-creates all tables on startup when MYSQL_* is set
