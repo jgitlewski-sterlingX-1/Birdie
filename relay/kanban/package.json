@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "vite",
     "server:dev": "node server/index.mjs",
+    "db:init": "node server/init-db.mjs",
     "dev:full": "concurrently \"npm:server:dev\" \"npm:dev\"",
     "build": "tsc -b && vite build",
     "test": "vitest run",

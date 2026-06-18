@@ -66,8 +66,18 @@ Add these in the repo's **Settings → Secrets and variables → Actions**:
 | `CLOUDWAYS_API_REDEPLOY_CMD` | e.g. `cd ~/relay-api && git fetch origin && git reset --hard origin/main && cd relay/kanban && npm ci --omit=dev && pm2 reload relay-api` |
 
 Releasing is decoupled from deploying: code ships dark and is turned on per role
-in the in-app **Settings → Admin** feature-flag panel. The flag/role tables are
-created automatically by the API on startup (`initFlagSchema`).
+in the in-app **Settings → Admin** feature-flag panel.
+
+## Database schema
+
+When `MYSQL_*` is configured, the API creates the **entire schema on startup**
+— core tables (`users`, `sessions`, `gmail_accounts`, …) via `ensureCoreSchema`
+then flags/roles via `initFlagSchema`. Both are idempotent (`CREATE TABLE IF NOT
+EXISTS`), so the DB cannot be left half-migrated and no manual migration step is
+required. The API only creates tables, not the database itself, so the
+`MYSQL_DATABASE` must already exist (the standalone `npm run db:init` creates the
+database too — use it to pre-provision). With no `MYSQL_*` set, the API runs on
+its in-memory fallback (state resets on restart).
 
 ## Redeploys (manual fallback)
 

@@ -4,6 +4,7 @@ import cors from 'cors';
 import { google } from 'googleapis';
 import { v4 as uuidv4 } from 'uuid';
 import mysql from 'mysql2/promise';
+import { ensureCoreSchema } from './init-db.mjs';
 
 const app = express();
 const PORT = process.env.RELAY_API_PORT || 8787;
@@ -1224,7 +1225,11 @@ app.put('/api/admin/users/:id/roles', async (req, res) => {
 
 app.listen(PORT, () => {
   if (dbPool) {
-    initFlagSchema().catch((e) => console.error(`[Flags] Schema init failed: ${e.message}`));
+    // Core app schema (users, sessions, gmail_accounts, …) then flags/roles.
+    // Both idempotent; runs every boot so the DB can't be half-migrated.
+    ensureCoreSchema(dbPool)
+      .then(() => initFlagSchema())
+      .catch((e) => console.error(`[DB] Schema init failed: ${e.message}`));
   }
   console.log(`Relay API listening on http://localhost:${PORT}`);
   console.log(`[Config] Allowed domains: ${ALLOWED_DOMAINS.join(', ')}`);
