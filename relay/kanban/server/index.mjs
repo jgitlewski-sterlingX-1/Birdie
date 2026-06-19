@@ -356,13 +356,27 @@ async function loadSessionsFromDb() {
       'SELECT id, user_id, email, name, domain, tokens_json, created_at, expires_at FROM sessions WHERE expires_at > NOW()'
     );
     for (const r of rows) {
+      const tokens = r.tokens_json ? JSON.parse(r.tokens_json) : null;
       sessions.set(r.id, {
         id: r.id,
         user: { id: r.user_id, email: r.email, name: r.name, domain: r.domain },
         createdAt: r.created_at,
-        tokens: r.tokens_json ? JSON.parse(r.tokens_json) : null,
+        tokens,
         expiresAt: new Date(r.expires_at).getTime(),
       });
+      // Rebuild the in-memory Gmail connection from the persisted session token
+      // so email sync and the Gmail tile survive restarts/deploys (the login
+      // account's token IS the session token, with gmail scopes).
+      if (tokens) {
+        upsertGmailAccount({
+          accountEmail: r.email,
+          userDomain: r.domain,
+          scopes: AUTH_SCOPES,
+          token: tokens,
+          source: 'auth-login',
+          setAsDefault: !defaultGmailAccountEmail,
+        });
+      }
     }
     console.log(`[Session] Rehydrated ${rows.length} active session(s)`);
   } catch (e) {
