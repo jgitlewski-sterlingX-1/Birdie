@@ -84,6 +84,53 @@ let memFlags = DEFAULT_FLAGS.map((f) => ({ ...f, allowedRoles: [...f.allowedRole
 let memRoles = DEFAULT_ROLES.map((r) => ({ ...r }));
 const memUserRoles = new Map(); // userId -> string[]
 const memLockedUsers = new Set(); // userIds locked (in-memory fallback)
+const memConnections = new Map(); // `${userId}:${provider}` -> connection (in-memory fallback)
+
+// ── Per-user integration connections ────────────────────────────────────────
+// One connection per (user, provider). secret holds the API key / OAuth token.
+async function getConnection(userId, provider) {
+  if (!userId) return null;
+  if (!dbPool) return memConnections.get(`${userId}:${provider}`) ?? null;
+  try {
+    const [rows] = await dbPool.query(
+      'SELECT provider, status, account_label, secret_json, scopes_json FROM integration_connections WHERE user_id = ? AND provider = ? LIMIT 1',
+      [userId, provider]
+    );
+    const r = rows?.[0];
+    if (!r) return null;
+    return {
+      provider: r.provider,
+      status: r.status,
+      accountLabel: r.account_label,
+      secret: r.secret_json ? JSON.parse(r.secret_json) : null,
+      scopes: r.scopes_json ? JSON.parse(r.scopes_json) : [],
+    };
+  } catch (e) {
+    console.error(`[Integrations] getConnection failed: ${e.message}`);
+    return null;
+  }
+}
+
+async function setConnection(userId, provider, { accountLabel = null, secret = null, scopes = [] }) {
+  if (!dbPool) {
+    memConnections.set(`${userId}:${provider}`, { provider, status: 'connected', accountLabel, secret, scopes });
+    return;
+  }
+  await dbPool.query(
+    `INSERT INTO integration_connections (user_id, provider, status, account_label, secret_json, scopes_json)
+     VALUES (?, ?, 'connected', ?, ?, ?)
+     ON DUPLICATE KEY UPDATE status='connected', account_label=VALUES(account_label), secret_json=VALUES(secret_json), scopes_json=VALUES(scopes_json)`,
+    [userId, provider, accountLabel, JSON.stringify(secret ?? null), JSON.stringify(scopes ?? [])]
+  );
+}
+
+async function deleteConnection(userId, provider) {
+  if (!dbPool) {
+    memConnections.delete(`${userId}:${provider}`);
+    return;
+  }
+  await dbPool.query('DELETE FROM integration_connections WHERE user_id = ? AND provider = ?', [userId, provider]);
+}
 
 async function initFlagSchema() {
   if (!dbPool) return;
@@ -968,7 +1015,9 @@ app.post('/api/integrations/salesforce/disconnect', async (req, res) => {
 });
 
 // Gmail integration endpoints (kept for "Connect Gmail" in Settings tab)
-app.get('/api/integrations', (_req, res) => {
+app.get('/api/integrations', async (req, res) => {
+  const session = getSessionById(req.query.sessionId);
+  const claudeConn = session ? await getConnection(session.user.id, 'claude') : null;
   const defaultAccount = getDefaultGmailAccount();
 
   res.json({
@@ -988,7 +1037,9 @@ app.get('/api/integrations', (_req, res) => {
       })),
     },
     claude: {
-      status: process.env.ANTHROPIC_API_KEY ? 'connected' : 'disconnected',
+      status: claudeConn ? 'connected' : 'disconnected',
+      accountLabel: claudeConn?.accountLabel ?? null,
+      platformKeyAvailable: !!process.env.ANTHROPIC_API_KEY,
       model: process.env.ANTHROPIC_MODEL || 'claude-sonnet-4-6',
     },
     slack: slackAccount
@@ -1331,7 +1382,27 @@ app.get('/api/slack/poll', async (req, res) => {
   }
 });
 
-// Draft an email reply in the user's voice via Claude.
+// Claude has no OAuth — each user stores their own Anthropic API key.
+app.post('/api/integrations/claude/connect', async (req, res) => {
+  const session = getSessionById(req.query.sessionId || req.body?.sessionId);
+  if (!session) return res.status(401).json({ error: 'Unauthorized session' });
+  const apiKey = (req.body?.apiKey || '').trim();
+  if (!apiKey.startsWith('sk-ant-')) {
+    return res.status(400).json({ error: 'That does not look like an Anthropic API key (expected sk-ant-…).' });
+  }
+  const accountLabel = `sk-ant-…${apiKey.slice(-4)}`;
+  await setConnection(session.user.id, 'claude', { accountLabel, secret: apiKey });
+  res.json({ ok: true, accountLabel });
+});
+
+app.post('/api/integrations/claude/disconnect', async (req, res) => {
+  const session = getSessionById(req.query.sessionId || req.body?.sessionId);
+  if (!session) return res.status(401).json({ error: 'Unauthorized session' });
+  await deleteConnection(session.user.id, 'claude');
+  res.json({ ok: true });
+});
+
+// Draft an email reply in the user's voice via Claude (per-user key, else platform).
 app.post('/api/email/draft', async (req, res) => {
   const sessionId = req.query.sessionId || req.body?.sessionId;
   const session = getSessionById(sessionId);
@@ -1339,9 +1410,10 @@ app.post('/api/email/draft', async (req, res) => {
     return res.status(401).json({ error: 'Unauthorized session' });
   }
 
-  const apiKey = process.env.ANTHROPIC_API_KEY;
+  const conn = await getConnection(session.user.id, 'claude');
+  const apiKey = (conn && conn.secret) || process.env.ANTHROPIC_API_KEY;
   if (!apiKey) {
-    return res.status(400).json({ error: 'ANTHROPIC_API_KEY is not set on the server.' });
+    return res.status(400).json({ error: 'No Claude key. Connect Claude in Settings → Integrations.' });
   }
 
   const { messages = [], subject = '', voiceInstructions = '' } = req.body ?? {};

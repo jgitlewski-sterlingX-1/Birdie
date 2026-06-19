@@ -105,6 +105,21 @@ export const CORE_TABLE_DDL = [
       INDEX idx_email_account_seen (account_email, seen_at),
       INDEX idx_email_thread (thread_id)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
+
+  // Per-user integration connections (claude API key, slack/salesforce/clickup
+  // OAuth tokens). One row per user per provider. secret_json holds the key or
+  // token (plaintext for now; KMS-encrypt later).
+  `CREATE TABLE IF NOT EXISTS integration_connections (
+      user_id CHAR(36) NOT NULL,
+      provider VARCHAR(32) NOT NULL,
+      status ENUM('connected', 'disconnected') NOT NULL DEFAULT 'connected',
+      account_label VARCHAR(320) NULL,
+      secret_json LONGTEXT NULL,
+      scopes_json TEXT NULL,
+      connected_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+      PRIMARY KEY (user_id, provider)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
 ];
 
 // Create all core tables on an existing connection/pool (already pointed at the

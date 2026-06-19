@@ -20,6 +20,8 @@ export interface GmailIntegrationStatus {
 
 export interface ClaudeIntegrationStatus {
   status: 'connected' | 'disconnected';
+  accountLabel?: string | null;
+  platformKeyAvailable?: boolean;
   model: string;
 }
 
@@ -69,10 +71,31 @@ export interface PolledEmail {
   date: string;
 }
 
-export async function getIntegrationsStatus(): Promise<IntegrationsResponse> {
-  const res = await apiFetch('/api/integrations');
+export async function getIntegrationsStatus(sessionId?: string): Promise<IntegrationsResponse> {
+  const q = sessionId ? `?sessionId=${encodeURIComponent(sessionId)}` : '';
+  const res = await apiFetch(`/api/integrations${q}`);
   if (!res.ok) throw new Error('Failed to fetch integrations status');
   return res.json() as Promise<IntegrationsResponse>;
+}
+
+// Claude is a per-user API key (no OAuth) — store / clear the user's key.
+export async function connectClaude(sessionId: string, apiKey: string): Promise<void> {
+  const res = await apiFetch(`/api/integrations/claude/connect?sessionId=${encodeURIComponent(sessionId)}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ apiKey }),
+  });
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({ error: 'Failed to connect Claude' }));
+    throw new Error(data.error || 'Failed to connect Claude');
+  }
+}
+
+export async function disconnectClaude(sessionId: string): Promise<void> {
+  const res = await apiFetch(`/api/integrations/claude/disconnect?sessionId=${encodeURIComponent(sessionId)}`, {
+    method: 'POST',
+  });
+  if (!res.ok) throw new Error('Failed to disconnect Claude');
 }
 
 // Salesforce lives behind the DB; degrade gracefully to "disconnected" when the

@@ -7,6 +7,8 @@ import { ApprovalLogView } from '../components/ApprovalLogView'
 import { AdminPanel } from '../components/AdminPanel'
 import { useFlags } from '../flags'
 import {
+  connectClaude,
+  disconnectClaude,
   disconnectGmail,
   disconnectSlack,
   getIntegrationsStatus,
@@ -35,6 +37,7 @@ export function SettingsPage({ skillsStore, approvalsStore }: SettingsPageProps)
   const [instructions, setInstructions] = useState('')
   const [gmail, setGmail] = useState<GmailIntegrationStatus | null>(null)
   const [claudeStatus, setClaudeStatus] = useState<ClaudeIntegrationStatus | null>(null)
+  const [claudeKey, setClaudeKey] = useState('')
   const [slackStatus, setSlackStatus] = useState<SlackIntegrationStatus | null>(null)
   const [sfStatus, setSfStatus] = useState<SalesforceStatus | null>(null)
   const [integrationError, setIntegrationError] = useState<string | null>(null)
@@ -47,7 +50,7 @@ export function SettingsPage({ skillsStore, approvalsStore }: SettingsPageProps)
     try {
       setLoadingIntegration(true)
       setIntegrationError(null)
-      const data = await getIntegrationsStatus()
+      const data = await getIntegrationsStatus(sessionId ?? '')
       setGmail(data.gmail)
       setClaudeStatus(data.claude)
       setSlackStatus(data.slack)
@@ -65,6 +68,28 @@ export function SettingsPage({ skillsStore, approvalsStore }: SettingsPageProps)
     return () => window.clearTimeout(t)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
+
+  const connectClaudeKey = async () => {
+    if (!claudeKey.trim()) return
+    try {
+      setIntegrationError(null)
+      await connectClaude(sessionId ?? '', claudeKey.trim())
+      setClaudeKey('')
+      await loadIntegrationStatus()
+    } catch (err) {
+      setIntegrationError(err instanceof Error ? err.message : 'Failed to connect Claude')
+    }
+  }
+
+  const disconnectClaudeKey = async () => {
+    try {
+      setIntegrationError(null)
+      await disconnectClaude(sessionId ?? '')
+      await loadIntegrationStatus()
+    } catch (err) {
+      setIntegrationError(err instanceof Error ? err.message : 'Failed to disconnect Claude')
+    }
+  }
 
   const connectSlack = async () => {
     try {
@@ -104,8 +129,14 @@ export function SettingsPage({ skillsStore, approvalsStore }: SettingsPageProps)
       connected: claudeStatus?.status === 'connected',
       details:
         claudeStatus?.status === 'connected'
-          ? [`Model: ${claudeStatus.model}`, 'Drafts replies · triages email']
-          : ['Set ANTHROPIC_API_KEY on the server'],
+          ? [claudeStatus.accountLabel ?? 'Your API key', `Model: ${claudeStatus.model}`]
+          : claudeStatus?.platformKeyAvailable
+            ? ['Using the shared key until you connect your own']
+            : ['Paste your Anthropic API key to enable drafting'],
+      action:
+        claudeStatus?.status === 'connected'
+          ? { label: 'Disconnect', onClick: disconnectClaudeKey, danger: true }
+          : undefined,
     },
     {
       key: 'gmail',
@@ -369,6 +400,20 @@ export function SettingsPage({ skillsStore, approvalsStore }: SettingsPageProps)
                       </div>
                     ))}
                   </div>
+                  {tile.key === 'claude' && !tile.connected ? (
+                    <div className="modal-subtask-add">
+                      <input
+                        type="password"
+                        value={claudeKey}
+                        onChange={(e) => setClaudeKey(e.target.value)}
+                        placeholder="sk-ant-…"
+                        style={{ border: '1px solid #cbd5e1', borderRadius: 6, padding: '6px 8px', flex: 1 }}
+                      />
+                      <button type="button" className="btn btn-primary" onClick={connectClaudeKey}>
+                        Connect
+                      </button>
+                    </div>
+                  ) : null}
                   {tile.action ? (
                     <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
                       <button
