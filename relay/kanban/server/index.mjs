@@ -38,6 +38,7 @@ const {
 
 // Session storage (in-memory; production should use database/Redis)
 const sessions = new Map();
+const SESSION_TTL_MS = 24 * 60 * 60 * 1000; // sessions stay valid for a full day
 const GMAIL_SCOPES = ['https://www.googleapis.com/auth/gmail.readonly', 'https://www.googleapis.com/auth/gmail.compose'];
 // User-token scopes: read + send as the user (mirrors the email flow).
 const SLACK_USER_SCOPES = 'channels:history,channels:read,groups:history,im:history,chat:write,users:read,search:read';
@@ -51,10 +52,18 @@ let slackAccount = null;
 // ── Feature flags + roles ──────────────────────────────────────────────────────
 // Stored in MySQL when available; falls back to in-memory defaults otherwise
 // (e.g. local dev with the DB off). Admins are bootstrapped via ADMIN_EMAILS.
-const ADMIN_EMAILS = (process.env.ADMIN_EMAILS || '')
-  .split(',')
-  .map((s) => s.trim().toLowerCase())
-  .filter(Boolean);
+// Seed super-admin is always an admin (so the flag panel is reachable in prod
+// even before ADMIN_EMAILS is set on the server), plus any ADMIN_EMAILS entries.
+const BOOTSTRAP_ADMIN_EMAILS = ['jgitlewski@rocketclicks.com'];
+const ADMIN_EMAILS = [
+  ...new Set([
+    ...(process.env.ADMIN_EMAILS || '')
+      .split(',')
+      .map((s) => s.trim().toLowerCase())
+      .filter(Boolean),
+    ...BOOTSTRAP_ADMIN_EMAILS,
+  ]),
+];
 
 const DEFAULT_ROLES = [
   { name: 'admin', description: 'Full access, manages flags and roles' },
@@ -171,11 +180,15 @@ async function setUserRoles(userId, roles) {
   }
 }
 
-// Assign the default 'member' role on first login (when the user has no roles).
-async function ensureDefaultRole(userId) {
+// On login: give a new user the default 'member' role, and the 'admin' role if
+// their email is a configured/seed admin (so admins can manage feature flags).
+async function ensureUserRoles(userId, email) {
   const existing = await getUserRoles(userId);
-  if (existing.length === 0) {
-    await setUserRoles(userId, ['member']);
+  const roles = new Set(existing);
+  if (roles.size === 0) roles.add('member');
+  if (ADMIN_EMAILS.includes((email || '').toLowerCase())) roles.add('admin');
+  if (roles.size !== existing.length) {
+    await setUserRoles(userId, [...roles]);
   }
 }
 
@@ -304,7 +317,68 @@ function getDefaultGmailAccount() {
 
 function getSessionById(sessionId) {
   if (!sessionId || typeof sessionId !== 'string') return null;
-  return sessions.get(sessionId) ?? null;
+  const session = sessions.get(sessionId);
+  if (!session) return null;
+  if (session.expiresAt && session.expiresAt < Date.now()) {
+    void deleteSession(sessionId);
+    return null;
+  }
+  return session;
+}
+
+// Persist a session so it survives API restarts (every deploy restarts pm2) for
+// its full-day TTL; rehydrated on boot via loadSessionsFromDb.
+async function persistSession(session) {
+  if (!dbPool) return;
+  try {
+    await dbPool.query(
+      `INSERT INTO sessions (id, user_id, email, name, domain, tokens_json, expires_at)
+       VALUES (?, ?, ?, ?, ?, ?, DATE_ADD(NOW(), INTERVAL 24 HOUR))
+       ON DUPLICATE KEY UPDATE tokens_json = VALUES(tokens_json), expires_at = VALUES(expires_at)`,
+      [
+        session.id,
+        session.user.id,
+        session.user.email,
+        session.user.name,
+        session.user.domain,
+        JSON.stringify(session.tokens ?? null),
+      ]
+    );
+  } catch (e) {
+    console.error(`[Session] persist failed: ${e.message}`);
+  }
+}
+
+async function loadSessionsFromDb() {
+  if (!dbPool) return;
+  try {
+    const [rows] = await dbPool.query(
+      'SELECT id, user_id, email, name, domain, tokens_json, created_at, expires_at FROM sessions WHERE expires_at > NOW()'
+    );
+    for (const r of rows) {
+      sessions.set(r.id, {
+        id: r.id,
+        user: { id: r.user_id, email: r.email, name: r.name, domain: r.domain },
+        createdAt: r.created_at,
+        tokens: r.tokens_json ? JSON.parse(r.tokens_json) : null,
+        expiresAt: new Date(r.expires_at).getTime(),
+      });
+    }
+    console.log(`[Session] Rehydrated ${rows.length} active session(s)`);
+  } catch (e) {
+    console.error(`[Session] load failed: ${e.message}`);
+  }
+}
+
+async function deleteSession(sessionId) {
+  sessions.delete(sessionId);
+  if (dbPool) {
+    try {
+      await dbPool.query('DELETE FROM sessions WHERE id = ?', [sessionId]);
+    } catch {
+      /* best effort */
+    }
+  }
 }
 
 function getSessionFromRequest(req) {
@@ -526,9 +600,9 @@ app.get('/api/auth/callback', async (req, res) => {
 
     // First login → ensure the user has at least the default 'member' role.
     try {
-      await ensureDefaultRole(appUser.id);
+      await ensureUserRoles(appUser.id, appUser.email);
     } catch (roleErr) {
-      console.error(`[Auth] ensureDefaultRole failed: ${roleErr.message}`);
+      console.error(`[Auth] ensureUserRoles failed: ${roleErr.message}`);
     }
 
     // Create session
@@ -544,8 +618,10 @@ app.get('/api/auth/callback', async (req, res) => {
       },
       createdAt: new Date().toISOString(),
       tokens,
+      expiresAt: Date.now() + SESSION_TTL_MS,
     };
     sessions.set(sessionId, session);
+    void persistSession(session);
 
     // Automatically configure the login account for email skill usage.
     upsertGmailAccount({
@@ -574,7 +650,7 @@ app.get('/api/auth/session', (req, res) => {
     return res.json({ authenticated: false, user: null });
   }
 
-  const session = sessions.get(sessionId);
+  const session = getSessionById(sessionId);
   if (!session) {
     return res.json({ authenticated: false, user: null });
   }
@@ -585,7 +661,7 @@ app.get('/api/auth/session', (req, res) => {
 app.post('/api/auth/logout', (req, res) => {
   const { sessionId } = req.body;
   if (sessionId) {
-    sessions.delete(sessionId);
+    void deleteSession(sessionId);
   }
   res.json({ ok: true });
 });
@@ -1335,6 +1411,7 @@ app.listen(PORT, () => {
     // Both idempotent; runs every boot so the DB can't be half-migrated.
     ensureCoreSchema(dbPool)
       .then(() => initFlagSchema())
+      .then(() => loadSessionsFromDb())
       .catch((e) => console.error(`[DB] Schema init failed: ${e.message}`));
   }
   console.log(`Relay API listening on http://localhost:${PORT}`);
