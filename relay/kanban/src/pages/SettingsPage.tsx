@@ -38,6 +38,7 @@ export function SettingsPage({ skillsStore, approvalsStore }: SettingsPageProps)
   const [gmail, setGmail] = useState<GmailIntegrationStatus | null>(null)
   const [claudeStatus, setClaudeStatus] = useState<ClaudeIntegrationStatus | null>(null)
   const [claudeKey, setClaudeKey] = useState('')
+  const [modalProvider, setModalProvider] = useState<string | null>(null)
   const [slackStatus, setSlackStatus] = useState<SlackIntegrationStatus | null>(null)
   const [sfStatus, setSfStatus] = useState<SalesforceStatus | null>(null)
   const [integrationError, setIntegrationError] = useState<string | null>(null)
@@ -76,6 +77,7 @@ export function SettingsPage({ skillsStore, approvalsStore }: SettingsPageProps)
       await connectClaude(sessionId ?? '', claudeKey.trim())
       setClaudeKey('')
       await loadIntegrationStatus()
+      setModalProvider(null)
     } catch (err) {
       setIntegrationError(err instanceof Error ? err.message : 'Failed to connect Claude')
     }
@@ -86,6 +88,7 @@ export function SettingsPage({ skillsStore, approvalsStore }: SettingsPageProps)
       setIntegrationError(null)
       await disconnectClaude(sessionId ?? '')
       await loadIntegrationStatus()
+      setModalProvider(null)
     } catch (err) {
       setIntegrationError(err instanceof Error ? err.message : 'Failed to disconnect Claude')
     }
@@ -131,12 +134,8 @@ export function SettingsPage({ skillsStore, approvalsStore }: SettingsPageProps)
         claudeStatus?.status === 'connected'
           ? [claudeStatus.accountLabel ?? 'Your API key', `Model: ${claudeStatus.model}`]
           : claudeStatus?.platformKeyAvailable
-            ? ['Using the shared key until you connect your own']
-            : ['Paste your Anthropic API key to enable drafting'],
-      action:
-        claudeStatus?.status === 'connected'
-          ? { label: 'Disconnect', onClick: disconnectClaudeKey, danger: true }
-          : undefined,
+            ? ['Click to connect your own key (shared key in use)']
+            : ['Click to connect your Anthropic API key'],
     },
     {
       key: 'gmail',
@@ -353,6 +352,7 @@ export function SettingsPage({ skillsStore, approvalsStore }: SettingsPageProps)
                 .map((tile) => (
                 <div
                   key={tile.key}
+                  onClick={tile.key === 'claude' ? () => setModalProvider('claude') : undefined}
                   style={{
                     border: '1px solid #e2e8f0',
                     borderRadius: 12,
@@ -360,6 +360,7 @@ export function SettingsPage({ skillsStore, approvalsStore }: SettingsPageProps)
                     display: 'grid',
                     gap: 8,
                     background: '#fff',
+                    cursor: tile.key === 'claude' ? 'pointer' : 'default',
                   }}
                 >
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
@@ -400,20 +401,6 @@ export function SettingsPage({ skillsStore, approvalsStore }: SettingsPageProps)
                       </div>
                     ))}
                   </div>
-                  {tile.key === 'claude' && !tile.connected ? (
-                    <div className="modal-subtask-add">
-                      <input
-                        type="password"
-                        value={claudeKey}
-                        onChange={(e) => setClaudeKey(e.target.value)}
-                        placeholder="sk-ant-…"
-                        style={{ border: '1px solid #cbd5e1', borderRadius: 6, padding: '6px 8px', flex: 1 }}
-                      />
-                      <button type="button" className="btn btn-primary" onClick={connectClaudeKey}>
-                        Connect
-                      </button>
-                    </div>
-                  ) : null}
                   {tile.action ? (
                     <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
                       <button
@@ -570,6 +557,111 @@ export function SettingsPage({ skillsStore, approvalsStore }: SettingsPageProps)
             </button>
           </div>
         </section>
+
+        {modalProvider === 'claude' ? (
+          <div
+            onClick={() => setModalProvider(null)}
+            style={{
+              position: 'fixed',
+              inset: 0,
+              background: 'rgba(15,23,42,0.45)',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              zIndex: 50,
+              padding: 16,
+            }}
+          >
+            <div
+              onClick={(e) => e.stopPropagation()}
+              className="panel"
+              style={{ width: 'min(460px, 94vw)', padding: 20, display: 'grid', gap: 12, background: '#fff', borderRadius: 12 }}
+            >
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                  <span
+                    style={{
+                      width: 24,
+                      height: 24,
+                      borderRadius: 6,
+                      background: '#D97757',
+                      color: '#fff',
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      fontWeight: 700,
+                      fontSize: 12,
+                    }}
+                  >
+                    C
+                  </span>
+                  <h3 style={{ margin: 0 }}>Connect Claude</h3>
+                </div>
+                <button type="button" className="btn btn-ghost" onClick={() => setModalProvider(null)}>
+                  ✕
+                </button>
+              </div>
+
+              {integrationError ? (
+                <div style={{ color: '#b91c1c', fontSize: 13 }}>{integrationError}</div>
+              ) : null}
+
+              {claudeStatus?.status === 'connected' ? (
+                <>
+                  <div style={{ fontSize: 13, color: '#334155' }}>
+                    Connected with <strong>{claudeStatus.accountLabel}</strong>. Your key is saved to your
+                    account and reused automatically every time you log in.
+                  </div>
+                  <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
+                    <button type="button" className="btn btn-ghost" onClick={() => setModalProvider(null)}>
+                      Close
+                    </button>
+                    <button type="button" className="btn btn-danger" onClick={disconnectClaudeKey}>
+                      Disconnect
+                    </button>
+                  </div>
+                </>
+              ) : (
+                <>
+                  <p style={{ fontSize: 13, color: '#475569', margin: 0 }}>
+                    Paste your Anthropic API key. It's stored to your account and reused automatically on
+                    every login.
+                  </p>
+                  <input
+                    type="password"
+                    value={claudeKey}
+                    onChange={(e) => setClaudeKey(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') {
+                        e.preventDefault()
+                        void connectClaudeKey()
+                      }
+                    }}
+                    placeholder="sk-ant-…"
+                    autoFocus
+                    style={{ border: '1px solid #cbd5e1', borderRadius: 8, padding: '8px 10px' }}
+                  />
+                  <a
+                    href="https://console.anthropic.com/settings/keys"
+                    target="_blank"
+                    rel="noreferrer"
+                    style={{ fontSize: 12, color: '#2563eb' }}
+                  >
+                    Get an API key from the Anthropic Console →
+                  </a>
+                  <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
+                    <button type="button" className="btn btn-ghost" onClick={() => setModalProvider(null)}>
+                      Cancel
+                    </button>
+                    <button type="button" className="btn btn-primary" onClick={connectClaudeKey}>
+                      Save
+                    </button>
+                  </div>
+                </>
+              )}
+            </div>
+          </div>
+        ) : null}
         </div>
       ) : (
         <AdminPanel />
