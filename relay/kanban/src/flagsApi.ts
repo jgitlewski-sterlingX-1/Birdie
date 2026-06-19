@@ -20,6 +20,7 @@ export interface AdminUser {
   domain?: string | null;
   createdAt?: string | null;
   lastLoginAt?: string | null;
+  locked?: boolean;
   roles: string[];
 }
 
@@ -85,4 +86,16 @@ export async function setUserRoles(sessionId: string, userId: string, roles: str
     body: JSON.stringify({ roles }),
   });
   if (!res.ok) throw new Error('Failed to update roles');
+}
+
+export async function setUserLocked(sessionId: string, userId: string, locked: boolean): Promise<void> {
+  const res = await apiFetch(`/api/admin/users/${encodeURIComponent(userId)}/lock${qs(sessionId)}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ locked }),
+  });
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({ error: 'Failed to update lock state' }));
+    throw new Error(data.error || 'Failed to update lock state');
+  }
 }

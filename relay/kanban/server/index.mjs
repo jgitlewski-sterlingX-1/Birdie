@@ -83,6 +83,7 @@ const DEFAULT_FLAGS = [
 let memFlags = DEFAULT_FLAGS.map((f) => ({ ...f, allowedRoles: [...f.allowedRoles] }));
 let memRoles = DEFAULT_ROLES.map((r) => ({ ...r }));
 const memUserRoles = new Map(); // userId -> string[]
+const memLockedUsers = new Set(); // userIds locked (in-memory fallback)
 
 async function initFlagSchema() {
   if (!dbPool) return;
@@ -195,7 +196,7 @@ async function ensureUserRoles(userId, email) {
 async function listKnownUsers() {
   if (dbPool) {
     const [rows] = await dbPool.query(
-      'SELECT id, email, name, domain, created_at, last_login_at FROM users ORDER BY email'
+      'SELECT id, email, name, domain, created_at, last_login_at, locked FROM users ORDER BY email'
     );
     return rows.map((r) => ({
       id: String(r.id),
@@ -204,6 +205,7 @@ async function listKnownUsers() {
       domain: r.domain,
       createdAt: r.created_at,
       lastLoginAt: r.last_login_at,
+      locked: !!r.locked,
     }));
   }
   // In-memory fallback: derive from active sessions (no persisted history).
@@ -217,6 +219,7 @@ async function listKnownUsers() {
         domain: s.user.domain ?? null,
         createdAt: null,
         lastLoginAt: null,
+        locked: memLockedUsers.has(String(s.user.id)),
       });
   }
   return Array.from(byId.values());
@@ -393,6 +396,42 @@ async function deleteSession(sessionId) {
       /* best effort */
     }
   }
+}
+
+// Invalidate all of a user's sessions (used when locking an account).
+async function deleteUserSessions(userId) {
+  for (const [id, s] of sessions) {
+    if (s.user?.id === userId) sessions.delete(id);
+  }
+  if (dbPool) {
+    try {
+      await dbPool.query('DELETE FROM sessions WHERE user_id = ?', [userId]);
+    } catch {
+      /* best effort */
+    }
+  }
+}
+
+async function isUserLocked(userId) {
+  if (!dbPool) return memLockedUsers.has(userId);
+  try {
+    const [rows] = await dbPool.query('SELECT locked FROM users WHERE id = ? LIMIT 1', [userId]);
+    return !!rows?.[0]?.locked;
+  } catch {
+    return false;
+  }
+}
+
+// Lock/unlock an account. Locking also kills the user's active sessions so they
+// are logged out immediately and can't re-login (blocked in the auth callback).
+async function setUserLocked(userId, locked) {
+  if (!dbPool) {
+    if (locked) memLockedUsers.add(userId);
+    else memLockedUsers.delete(userId);
+  } else {
+    await dbPool.query('UPDATE users SET locked = ? WHERE id = ?', [locked ? 1 : 0, userId]);
+  }
+  if (locked) await deleteUserSessions(userId);
 }
 
 function getSessionFromRequest(req) {
@@ -613,6 +652,12 @@ app.get('/api/auth/callback', async (req, res) => {
     });
 
     // First login → ensure the user has at least the default 'member' role.
+    // Locked accounts cannot sign in.
+    if (await isUserLocked(appUser.id)) {
+      console.warn(`[Auth] Locked account login blocked: ${email}`);
+      return res.status(403).send('Your account has been locked. Contact an administrator.');
+    }
+
     try {
       await ensureUserRoles(appUser.id, appUser.email);
     } catch (roleErr) {
@@ -1416,6 +1461,27 @@ app.put('/api/admin/users/:id/roles', async (req, res) => {
   if (!(await requireAdmin(req, res))) return;
   const { roles } = req.body ?? {};
   await setUserRoles(req.params.id, Array.isArray(roles) ? roles : []);
+  res.json({ ok: true });
+});
+
+// Admin: lock / unlock a user account (locking logs them out + blocks re-login).
+app.put('/api/admin/users/:id/lock', async (req, res) => {
+  const session = await requireAdmin(req, res);
+  if (!session) return;
+  const locked = !!req.body?.locked;
+  const targetId = req.params.id;
+
+  if (targetId === session.user.id) {
+    return res.status(400).json({ error: 'You cannot lock your own account.' });
+  }
+  if (locked && dbPool) {
+    const [rows] = await dbPool.query('SELECT email FROM users WHERE id = ? LIMIT 1', [targetId]);
+    const targetEmail = rows?.[0]?.email ?? null;
+    if (targetEmail && ADMIN_EMAILS.includes(targetEmail.toLowerCase())) {
+      return res.status(400).json({ error: 'Cannot lock a configured admin account.' });
+    }
+  }
+  await setUserLocked(targetId, locked);
   res.json({ ok: true });
 });
 

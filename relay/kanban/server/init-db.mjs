@@ -16,6 +16,7 @@ export const CORE_TABLE_DDL = [
       created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
       updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
       last_login_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      locked TINYINT(1) NOT NULL DEFAULT 0,
       UNIQUE KEY uq_users_google_sub (google_sub),
       UNIQUE KEY uq_users_email (email),
       INDEX idx_users_domain (domain)
@@ -111,6 +112,21 @@ export const CORE_TABLE_DDL = [
 export async function ensureCoreSchema(conn) {
   for (const ddl of CORE_TABLE_DDL) {
     await conn.query(ddl);
+  }
+  // Idempotent column migrations for tables created before a column existed.
+  await ensureColumn(conn, 'users', 'locked', 'TINYINT(1) NOT NULL DEFAULT 0');
+}
+
+// Add a column only if absent (MySQL has no ADD COLUMN IF NOT EXISTS), so
+// ensureCoreSchema stays safe to re-run against an existing schema.
+async function ensureColumn(conn, table, column, definition) {
+  const [rows] = await conn.query(
+    `SELECT COUNT(*) AS c FROM information_schema.columns
+     WHERE table_schema = DATABASE() AND table_name = ? AND column_name = ?`,
+    [table, column]
+  );
+  if (rows[0].c === 0) {
+    await conn.query(`ALTER TABLE \`${table}\` ADD COLUMN \`${column}\` ${definition}`);
   }
 }
 

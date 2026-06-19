@@ -6,6 +6,7 @@ import {
   getAdminRoles,
   getAdminUsers,
   saveFlag,
+  setUserLocked,
   setUserRoles,
   type AdminUser,
   type FlagDefinition,
@@ -54,6 +55,17 @@ export function AdminPanel() {
       ? flag.allowedRoles.filter((r) => r !== role)
       : [...flag.allowedRoles, role]
     void persistFlag({ ...flag, allowedRoles })
+  }
+
+  const toggleUserLock = async (user: AdminUser) => {
+    const locked = !user.locked
+    setUsers((us) => us.map((u) => (u.id === user.id ? { ...u, locked } : u)))
+    try {
+      await setUserLocked(sid, user.id, locked)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Failed to update lock state')
+      await load() // revert optimistic update
+    }
   }
 
   const toggleUserRole = async (user: AdminUser, role: string) => {
@@ -157,8 +169,24 @@ export function AdminPanel() {
         <h3 style={{ marginBottom: 8 }}>Users &amp; roles</h3>
         <div style={{ display: 'grid', gap: 8 }}>
           {users.map((u) => (
-            <div key={u.id} style={box}>
-              <div style={{ fontWeight: 600, fontSize: 13 }}>{u.name}</div>
+            <div key={u.id} style={{ ...box, opacity: u.locked ? 0.65 : 1 }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <div style={{ fontWeight: 600, fontSize: 13, display: 'flex', gap: 6, alignItems: 'center' }}>
+                  {u.name}
+                  {u.locked ? (
+                    <span className="badge" style={{ background: '#fee2e2', color: '#b91c1c' }}>
+                      Locked
+                    </span>
+                  ) : null}
+                </div>
+                <button
+                  type="button"
+                  className={u.locked ? 'btn btn-ghost' : 'btn btn-danger'}
+                  onClick={() => void toggleUserLock(u)}
+                >
+                  {u.locked ? 'Unlock' : 'Lock'}
+                </button>
+              </div>
               <div style={{ color: '#64748b', fontSize: 12 }}>{u.email}</div>
               <div style={{ color: '#94a3b8', fontSize: 11, marginBottom: 6 }}>
                 {u.domain ? `${u.domain} · ` : ''}
