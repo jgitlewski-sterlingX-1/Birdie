@@ -1402,6 +1402,169 @@ app.post('/api/integrations/claude/disconnect', async (req, res) => {
   res.json({ ok: true });
 });
 
+// ── Claude custom Skills (Anthropic /v1/skills, per-user key) ────────────────
+// Skills are workspace-scoped to whatever API key created them, so we always
+// use the user's own connected key here (no platform-key fallback) — a skill a
+// user builds lands in their own Anthropic workspace. Beta header per the
+// Skills API. Create/version uploads are multipart/form-data: a display_title
+// field plus one files[] part per file, with the relative path in the filename.
+const SKILLS_BETA = 'skills-2025-10-02';
+
+function slugifySkillName(title) {
+  const slug = String(title || '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 64);
+  return slug || 'custom-skill';
+}
+
+// Build a SKILL.md from the user's title/description/instructions. Frontmatter
+// requires name (slug) + description; the body carries the instructions.
+function buildSkillMd({ slug, description, category, instructions }) {
+  const desc = String(description || slug).replace(/\s+/g, ' ').trim().slice(0, 1024);
+  const front = `---\nname: ${slug}\ndescription: ${desc}\n---\n\n`;
+  const body =
+    (category ? `Applies to ${category} workflows.\n\n` : '') +
+    String(instructions || '').trim() +
+    '\n';
+  return front + body;
+}
+
+async function callAnthropicSkills(apiKey, path, { method = 'GET', formData = null } = {}) {
+  // Do NOT set content-type for multipart — fetch adds the boundary itself.
+  return fetch(`https://api.anthropic.com/v1/skills${path}`, {
+    method,
+    headers: {
+      'x-api-key': apiKey,
+      'anthropic-version': '2023-06-01',
+      'anthropic-beta': SKILLS_BETA,
+    },
+    body: formData,
+  });
+}
+
+function mapClaudeSkill(s) {
+  return {
+    id: s.id,
+    displayTitle: s.display_title,
+    latestVersion: s.latest_version,
+    source: s.source,
+    createdAt: s.created_at,
+    updatedAt: s.updated_at,
+    // Filled in by the list endpoint from the latest version's SKILL.md.
+    name: '',
+    description: '',
+  };
+}
+
+// The list/get endpoints don't carry the SKILL.md frontmatter; fetch the
+// version to get the model-facing name + description for the UI summary.
+async function fetchSkillVersionMeta(apiKey, skillId, version) {
+  try {
+    const r = await callAnthropicSkills(
+      apiKey,
+      `/${encodeURIComponent(skillId)}/versions/${encodeURIComponent(version)}`
+    );
+    if (!r.ok) return null;
+    return await r.json();
+  } catch {
+    return null;
+  }
+}
+
+async function claudeKeyForSession(session) {
+  const conn = await getConnection(session.user.id, 'claude');
+  return (conn && conn.secret) || null;
+}
+
+// List the user's custom skills (filters out Anthropic's pre-built ones).
+app.get('/api/skills', async (req, res) => {
+  const session = getSessionById(req.query.sessionId);
+  if (!session) return res.status(401).json({ error: 'Unauthorized session' });
+  const apiKey = await claudeKeyForSession(session);
+  if (!apiKey) return res.json({ skills: [], connected: false });
+  try {
+    const r = await callAnthropicSkills(apiKey, '');
+    if (!r.ok) {
+      const t = await r.text();
+      console.error(`[Skills] list error ${r.status}: ${t.slice(0, 200)}`);
+      return res.status(502).json({ error: `Claude skills error: ${r.status}` });
+    }
+    const data = await r.json();
+    const custom = (data.data ?? []).filter((s) => s.source === 'custom');
+    // Enrich each with its latest version's name + description (small N).
+    const skills = await Promise.all(
+      custom.map(async (s) => {
+        const mapped = mapClaudeSkill(s);
+        const meta = await fetchSkillVersionMeta(apiKey, s.id, s.latest_version);
+        if (meta) {
+          mapped.name = meta.name ?? '';
+          mapped.description = meta.description ?? '';
+        }
+        return mapped;
+      })
+    );
+    return res.json({ skills, connected: true });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Unknown skills error';
+    return res.status(500).json({ error: message });
+  }
+});
+
+// Create a custom skill from a title + instructions (auto-builds SKILL.md).
+app.post('/api/skills', async (req, res) => {
+  const session = getSessionById(req.query.sessionId || req.body?.sessionId);
+  if (!session) return res.status(401).json({ error: 'Unauthorized session' });
+  const apiKey = await claudeKeyForSession(session);
+  if (!apiKey) return res.status(400).json({ error: 'Connect Claude in Settings → Integrations first.' });
+
+  const { displayTitle = '', description = '', instructions = '', category = '' } = req.body ?? {};
+  if (!displayTitle.trim() || !instructions.trim()) {
+    return res.status(400).json({ error: 'Title and instructions are required.' });
+  }
+
+  const slug = slugifySkillName(displayTitle);
+  const skillMd = buildSkillMd({ slug, description, category, instructions });
+  const form = new FormData();
+  form.append('display_title', displayTitle.trim().slice(0, 255));
+  form.append('files[]', new Blob([skillMd], { type: 'text/markdown' }), `${slug}/SKILL.md`);
+
+  try {
+    const r = await callAnthropicSkills(apiKey, '', { method: 'POST', formData: form });
+    if (!r.ok) {
+      const t = await r.text();
+      console.error(`[Skills] create error ${r.status}: ${t.slice(0, 300)}`);
+      return res.status(502).json({ error: `Claude skills error: ${r.status} ${t.slice(0, 200)}` });
+    }
+    const data = await r.json();
+    return res.json({ skill: mapClaudeSkill(data) });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Unknown skills error';
+    return res.status(500).json({ error: message });
+  }
+});
+
+// Delete a custom skill.
+app.delete('/api/skills/:id', async (req, res) => {
+  const session = getSessionById(req.query.sessionId);
+  if (!session) return res.status(401).json({ error: 'Unauthorized session' });
+  const apiKey = await claudeKeyForSession(session);
+  if (!apiKey) return res.status(400).json({ error: 'Connect Claude first.' });
+  try {
+    const r = await callAnthropicSkills(apiKey, `/${encodeURIComponent(req.params.id)}`, { method: 'DELETE' });
+    if (!r.ok && r.status !== 404) {
+      const t = await r.text();
+      console.error(`[Skills] delete error ${r.status}: ${t.slice(0, 200)}`);
+      return res.status(502).json({ error: `Claude skills error: ${r.status}` });
+    }
+    return res.json({ ok: true });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Unknown skills error';
+    return res.status(500).json({ error: message });
+  }
+});
+
 // Draft an email reply in the user's voice via Claude (per-user key, else platform).
 app.post('/api/email/draft', async (req, res) => {
   const sessionId = req.query.sessionId || req.body?.sessionId;

@@ -21,6 +21,12 @@ import {
   type SalesforceStatus,
   type SlackIntegrationStatus,
 } from '../integrationsApi'
+import {
+  createClaudeSkill,
+  deleteClaudeSkill,
+  listClaudeSkills,
+  type ClaudeSkill,
+} from '../skillsApi'
 
 type Tab = 'skills' | 'approvals' | 'integrations' | 'admin'
 
@@ -43,8 +49,12 @@ export function SettingsPage({ skillsStore, approvalsStore }: SettingsPageProps)
   const [sfStatus, setSfStatus] = useState<SalesforceStatus | null>(null)
   const [integrationError, setIntegrationError] = useState<string | null>(null)
   const [loadingIntegration, setLoadingIntegration] = useState(false)
+  const [claudeSkills, setClaudeSkills] = useState<ClaudeSkill[]>([])
+  const [skillsConnected, setSkillsConnected] = useState(true)
+  const [skillError, setSkillError] = useState<string | null>(null)
+  const [savingSkill, setSavingSkill] = useState(false)
 
-  const { currentUser, sessionId } = useSession()
+  const { sessionId } = useSession()
   const { has, isAdmin } = useFlags()
 
   const loadIntegrationStatus = async () => {
@@ -70,6 +80,23 @@ export function SettingsPage({ skillsStore, approvalsStore }: SettingsPageProps)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
+  const loadClaudeSkills = async () => {
+    try {
+      setSkillError(null)
+      const { skills, connected } = await listClaudeSkills(sessionId ?? '')
+      setClaudeSkills(skills)
+      setSkillsConnected(connected)
+    } catch (err) {
+      setSkillError(err instanceof Error ? err.message : 'Failed to load skills')
+    }
+  }
+
+  useEffect(() => {
+    const t = window.setTimeout(() => void loadClaudeSkills(), 0)
+    return () => window.clearTimeout(t)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
   const connectClaudeKey = async () => {
     if (!claudeKey.trim()) return
     try {
@@ -91,6 +118,38 @@ export function SettingsPage({ skillsStore, approvalsStore }: SettingsPageProps)
       setModalProvider(null)
     } catch (err) {
       setIntegrationError(err instanceof Error ? err.message : 'Failed to disconnect Claude')
+    }
+  }
+
+  const submitSkill = async () => {
+    if (!name.trim() || !instructions.trim()) return
+    try {
+      setSkillError(null)
+      setSavingSkill(true)
+      await createClaudeSkill(sessionId ?? '', {
+        displayTitle: name.trim(),
+        description: description.trim(),
+        instructions: instructions.trim(),
+        category,
+      })
+      setName('')
+      setDescription('')
+      setInstructions('')
+      await loadClaudeSkills()
+    } catch (err) {
+      setSkillError(err instanceof Error ? err.message : 'Failed to create skill')
+    } finally {
+      setSavingSkill(false)
+    }
+  }
+
+  const removeSkill = async (id: string) => {
+    try {
+      setSkillError(null)
+      await deleteClaudeSkill(sessionId ?? '', id)
+      setClaudeSkills((cs) => cs.filter((s) => s.id !== id))
+    } catch (err) {
+      setSkillError(err instanceof Error ? err.message : 'Failed to delete skill')
     }
   }
 
@@ -231,13 +290,23 @@ export function SettingsPage({ skillsStore, approvalsStore }: SettingsPageProps)
 
       {tab === 'skills' ? (
         <div style={{ display: 'grid', gap: 12 }}>
+          {skillError ? <div style={{ color: '#b91c1c', fontSize: 13 }}>{skillError}</div> : null}
+
           <section className="panel" style={{ padding: 12 }}>
-            <h3 style={{ marginBottom: 8 }}>Create custom skill</h3>
+            <h3 style={{ marginBottom: 4 }}>Build a custom Claude skill</h3>
+            <p style={{ color: '#64748b', fontSize: 12, marginBottom: 8 }}>
+              Saved as a real, versioned Agent Skill on your connected Claude workspace.
+            </p>
+            {skillsConnected ? null : (
+              <div style={{ color: '#b45309', fontSize: 13, marginBottom: 8 }}>
+                Connect Claude in the Integrations tab to build skills.
+              </div>
+            )}
             <div style={{ display: 'grid', gap: 8 }}>
               <input
                 value={name}
                 onChange={(e) => setName(e.target.value)}
-                placeholder="Skill name"
+                placeholder="Skill title"
                 style={{ border: '1px solid #cbd5e1', borderRadius: 8, padding: '8px 10px' }}
               />
               <select
@@ -252,13 +321,13 @@ export function SettingsPage({ skillsStore, approvalsStore }: SettingsPageProps)
               <input
                 value={description}
                 onChange={(e) => setDescription(e.target.value)}
-                placeholder="Description"
+                placeholder="Description (when Claude should use this skill)"
                 style={{ border: '1px solid #cbd5e1', borderRadius: 8, padding: '8px 10px' }}
               />
               <textarea
                 value={instructions}
                 onChange={(e) => setInstructions(e.target.value)}
-                placeholder="Instructions"
+                placeholder="Instructions (becomes the SKILL.md body)"
                 rows={4}
                 style={{ border: '1px solid #cbd5e1', borderRadius: 8, padding: '8px 10px' }}
               />
@@ -266,69 +335,110 @@ export function SettingsPage({ skillsStore, approvalsStore }: SettingsPageProps)
                 <button
                   type="button"
                   className="btn btn-primary"
-                  onClick={() => {
-                    if (!name.trim() || !description.trim() || !instructions.trim()) return
-                    skillsStore.addSkill(
-                      name.trim(),
-                      category,
-                      description.trim(),
-                      instructions.trim(),
-                      currentUser.id
-                    )
-                    setName('')
-                    setDescription('')
-                    setInstructions('')
-                  }}
+                  disabled={savingSkill || !skillsConnected}
+                  onClick={() => void submitSkill()}
                 >
-                  Add skill
+                  {savingSkill ? 'Saving…' : 'Create skill on Claude'}
                 </button>
               </div>
             </div>
           </section>
 
           <section className="panel" style={{ padding: 12 }}>
-            <h3 style={{ marginBottom: 8 }}>Skills</h3>
+            <h3 style={{ marginBottom: 4 }}>Your Claude skills</h3>
+            <p style={{ color: '#64748b', fontSize: 12, marginBottom: 8 }}>
+              Custom skills you've built. The summary is the description Claude reads to decide when to use the skill.
+            </p>
             <div style={{ display: 'grid', gap: 8 }}>
-              {skillsStore.allSkills.map((skill) => (
+              {claudeSkills.map((skill) => (
                 <div
                   key={skill.id}
                   style={{
                     border: '1px solid #e2e8f0',
                     borderRadius: 8,
-                    padding: 10,
+                    padding: 12,
                     display: 'grid',
-                    gap: 6,
+                    gap: 8,
+                  }}
+                >
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <strong>{skill.displayTitle}</strong>
+                    <span className="badge" style={{ background: '#ecfdf5', color: '#047857' }}>
+                      custom
+                    </span>
+                  </div>
+                  <div style={{ color: '#475569', fontSize: 13 }}>
+                    {skill.description || <em style={{ color: '#94a3b8' }}>No description provided.</em>}
+                  </div>
+                  <dl
+                    style={{
+                      display: 'grid',
+                      gridTemplateColumns: 'auto 1fr',
+                      gap: '2px 10px',
+                      margin: 0,
+                      fontSize: 12,
+                      color: '#64748b',
+                    }}
+                  >
+                    <dt style={{ color: '#94a3b8' }}>Skill name</dt>
+                    <dd style={{ margin: 0 }}><code>{skill.name || '—'}</code></dd>
+                    <dt style={{ color: '#94a3b8' }}>Skill ID</dt>
+                    <dd style={{ margin: 0 }}><code>{skill.id}</code></dd>
+                    <dt style={{ color: '#94a3b8' }}>Version</dt>
+                    <dd style={{ margin: 0 }}><code>{skill.latestVersion}</code></dd>
+                    <dt style={{ color: '#94a3b8' }}>Updated</dt>
+                    <dd style={{ margin: 0 }}>{new Date(skill.updatedAt).toLocaleString()}</dd>
+                  </dl>
+                  <div className="skill-actions">
+                    <button
+                      type="button"
+                      className="btn btn-danger"
+                      onClick={() => void removeSkill(skill.id)}
+                    >
+                      Delete
+                    </button>
+                  </div>
+                </div>
+              ))}
+              {claudeSkills.length === 0 && skillsConnected ? (
+                <div style={{ color: '#64748b', fontSize: 13 }}>No custom skills yet.</div>
+              ) : null}
+            </div>
+          </section>
+
+          <section className="panel" style={{ padding: 12 }}>
+            <h3 style={{ marginBottom: 4 }}>Base skills</h3>
+            <p style={{ color: '#64748b', fontSize: 12, marginBottom: 8 }}>
+              Built into Relay and always on. These run automatically on incoming work.
+            </p>
+            <div style={{ display: 'grid', gap: 8 }}>
+              {skillsStore.baseSkills.map((skill) => (
+                <div
+                  key={skill.id}
+                  style={{
+                    border: '1px solid #e2e8f0',
+                    borderRadius: 8,
+                    padding: 12,
+                    display: 'grid',
+                    gap: 8,
                   }}
                 >
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                     <strong>{skill.name}</strong>
                     <span className="badge" style={{ background: '#f1f5f9', color: '#334155' }}>
-                      {skill.kind}
+                      {skill.category}
                     </span>
                   </div>
-                  <div style={{ color: '#64748b', fontSize: 13 }}>{skill.description}</div>
-                  <div className="skill-actions">
-                    {skill.kind === 'custom' ? (
-                      <>
-                        <button
-                          type="button"
-                          className="btn btn-ghost"
-                          onClick={() => skillsStore.toggleSkill(skill.id)}
-                        >
-                          {skill.enabled ? 'Disable' : 'Enable'}
-                        </button>
-                        <button
-                          type="button"
-                          className="btn btn-danger"
-                          onClick={() => skillsStore.deleteSkill(skill.id)}
-                        >
-                          Delete
-                        </button>
-                      </>
-                    ) : (
-                      <span style={{ color: '#64748b', fontSize: 12 }}>Inherited base skill (read-only)</span>
-                    )}
-                  </div>
+                  <div style={{ color: '#475569', fontSize: 13 }}>{skill.description}</div>
+                  <details>
+                    <summary style={{ cursor: 'pointer', fontSize: 12, color: '#2563eb' }}>
+                      What this skill does
+                    </summary>
+                    <p style={{ color: '#64748b', fontSize: 13, marginTop: 6, whiteSpace: 'pre-wrap' }}>
+                      {skill.instructions}
+                    </p>
+                  </details>
+                  <span style={{ color: '#94a3b8', fontSize: 12 }}>Inherited base skill (read-only)</span>
                 </div>
               ))}
             </div>
