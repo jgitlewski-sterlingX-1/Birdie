@@ -5,6 +5,7 @@ import { useBoard } from './store'
 import { useProjects } from './projectsStore'
 import { useSkills } from './skillsStore'
 import { useApprovals } from './approvalsStore'
+import { useAgents } from './agentsStore'
 import { pollNewEmails, pollSlackMessages } from './integrationsApi'
 import { runEmailPipeline } from './emailSkill'
 import { runSlackPipeline } from './slackSkill'
@@ -14,7 +15,43 @@ import { HomePage } from './pages/HomePage'
 import { ProjectsPage } from './pages/ProjectsPage'
 import { SettingsPage } from './pages/SettingsPage'
 import { LoginPage } from './pages/LoginPage'
-import type { Card } from './types'
+import type { Card, Priority, AgentFilter, FilterOperator } from './types'
+
+function applyOp(text: string, op: FilterOperator, val: string): boolean {
+  switch (op) {
+    case 'contains': return text.includes(val);
+    case 'not_contains': return !text.includes(val);
+    case 'is': return text === val;
+  }
+}
+
+interface EmailForFilter { from: string; subject: string; body: string }
+
+function applyEmailFilters(email: EmailForFilter, filters: AgentFilter[]): 'skip' | 'escalate' | 'flag' | null {
+  for (const f of filters) {
+    const val = f.value.toLowerCase().trim();
+    if (!val) continue;
+    let matches = false;
+    switch (f.field) {
+      case 'from':
+        matches = applyOp(email.from.toLowerCase(), f.operator, val);
+        break;
+      case 'domain': {
+        const domain = email.from.split('@')[1]?.toLowerCase() ?? '';
+        matches = applyOp(domain, f.operator, val);
+        break;
+      }
+      case 'subject':
+        matches = applyOp(email.subject.toLowerCase(), f.operator, val);
+        break;
+      case 'keyword':
+        matches = (email.subject + ' ' + email.body).toLowerCase().includes(val);
+        break;
+    }
+    if (matches) return f.action;
+  }
+  return null;
+}
 
 type View = 'board' | 'projects' | 'settings'
 
@@ -68,6 +105,7 @@ function AuthenticatedShell() {
   const projectsStore = useProjects()
   const skillsStore = useSkills()
   const approvalsStore = useApprovals()
+  const agentsStore = useAgents()
 
   const { addCard, updateCard, addSubtask } = boardStore
 
@@ -101,7 +139,7 @@ function AuthenticatedShell() {
   // Turn an incoming email into a card, then run the email skill pipeline:
   // base triage first (summary + to-dos), then any enabled custom email skills.
   const ingestEmailCard = useCallback(
-    (email: IncomingEmail) => {
+    (email: IncomingEmail, priorityOverride?: Priority) => {
       const emailThread = [
         { from: email.from, date: email.date, body: email.body || email.snippet },
       ]
@@ -111,6 +149,7 @@ function AuthenticatedShell() {
         source: 'gmail',
         provider: 'gmail',
         externalId: email.messageId,
+        priority: priorityOverride,
         emailThread,
         replyMeta: {
           threadId: email.threadId,
@@ -138,6 +177,11 @@ function AuthenticatedShell() {
       setPollStatus('Not signed in')
       return
     }
+    const emailAgentConfig = agentsStore.getConfig('email')
+    if (!emailAgentConfig.enabled) {
+      setPollStatus('Email Agent is paused — resume it in Settings → Agents.')
+      return
+    }
     setPollStatus('Pulling inbox…')
     try {
       const emails = await pollNewEmails(sessionId)
@@ -147,21 +191,34 @@ function AuthenticatedShell() {
           .filter(Boolean)
       )
       const fresh = emails.filter((e) => !existingExternalIds.has(e.messageId))
-      fresh.forEach((email) => ingestEmailCard(email as IncomingEmail))
-
+      let ingested = 0
+      for (const email of fresh) {
+        const filterResult = applyEmailFilters(
+          email as IncomingEmail,
+          emailAgentConfig.filters
+        )
+        if (filterResult === 'skip') continue
+        const priority: Priority | undefined =
+          filterResult === 'escalate' || filterResult === 'flag' ? 'high' : undefined
+        ingestEmailCard(email as IncomingEmail, priority)
+        ingested++
+      }
       if (emails.length === 0) {
         setPollStatus('No emails returned — inbox empty, already seen this session, or Gmail not connected.')
-      } else if (fresh.length === 0) {
+      } else if (ingested === 0 && fresh.length === 0) {
         setPollStatus(`All ${emails.length} pulled email(s) are already on the board.`)
+      } else if (ingested === 0) {
+        setPollStatus(`${fresh.length} new email(s) filtered out by agent rules.`)
       } else {
-        setPollStatus(`Pulled ${fresh.length} new email(s).`)
+        const skipped = fresh.length - ingested
+        setPollStatus(`Pulled ${ingested} new email(s).${skipped > 0 ? ` ${skipped} filtered by rules.` : ''}`)
       }
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Poll failed'
       setPollStatus(`Pull failed: ${message}`)
       console.error('[Email Agent] Poll failed:', error)
     }
-  }, [sessionId, ingestEmailCard])
+  }, [sessionId, ingestEmailCard, agentsStore])
 
   // Pull on login, then every 30s. The initial pull is deferred off the
   // synchronous effect body so its status update doesn't cascade renders.
@@ -255,7 +312,12 @@ function AuthenticatedShell() {
           />
         ) : null}
         {view === 'settings' ? (
-          <SettingsPage skillsStore={skillsStore} approvalsStore={approvalsStore} />
+          <SettingsPage
+            skillsStore={skillsStore}
+            approvalsStore={approvalsStore}
+            agentsStore={agentsStore}
+            board={boardStore.board}
+          />
         ) : null}
       </main>
     </div>

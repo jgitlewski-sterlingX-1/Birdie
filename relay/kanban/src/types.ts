@@ -136,3 +136,24 @@ export interface IntegrationConnection {
   accountEmail?: string;
   lastSyncedAt?: string;
 }
+
+export type AgentId = 'email' | 'slack' | 'calendar' | 'coordinator';
+export type FilterField = 'from' | 'domain' | 'subject' | 'keyword';
+export type FilterOperator = 'contains' | 'is' | 'not_contains';
+export type FilterAction = 'skip' | 'escalate' | 'flag';
+
+export interface AgentFilter {
+  id: string;
+  field: FilterField;
+  operator: FilterOperator;
+  value: string;
+  action: FilterAction;
+}
+
+export interface AgentConfig {
+  agentId: AgentId;
+  enabled: boolean;
+  instructions: string;
+  filters: AgentFilter[];
+  updatedAt: string;
+}

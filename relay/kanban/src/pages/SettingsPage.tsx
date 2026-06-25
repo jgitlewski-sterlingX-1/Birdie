@@ -1,10 +1,12 @@
 import { useEffect, useState } from 'react'
 import type { useSkills } from '../skillsStore'
 import type { useApprovals } from '../approvalsStore'
-import type { SkillCategory } from '../types'
+import type { useAgents } from '../agentsStore'
+import type { Board, SkillCategory } from '../types'
 import { useSession } from '../session'
 import { ApprovalLogView } from '../components/ApprovalLogView'
 import { AdminPanel } from '../components/AdminPanel'
+import { AgentsTab } from '../components/AgentsTab'
 import { useFlags } from '../flags'
 import {
   connectClaude,
@@ -28,15 +30,17 @@ import {
   type ClaudeSkill,
 } from '../skillsApi'
 
-type Tab = 'skills' | 'approvals' | 'integrations' | 'admin'
+type Tab = 'agents' | 'skills' | 'approvals' | 'integrations' | 'admin'
 
 interface SettingsPageProps {
   skillsStore: ReturnType<typeof useSkills>
   approvalsStore: ReturnType<typeof useApprovals>
+  agentsStore: ReturnType<typeof useAgents>
+  board: Board
 }
 
-export function SettingsPage({ skillsStore, approvalsStore }: SettingsPageProps) {
-  const [tab, setTab] = useState<Tab>('skills')
+export function SettingsPage({ skillsStore, approvalsStore, agentsStore, board }: SettingsPageProps) {
+  const [tab, setTab] = useState<Tab>('agents')
   const [name, setName] = useState('')
   const [category, setCategory] = useState<SkillCategory>('email')
   const [description, setDescription] = useState('')
@@ -258,6 +262,13 @@ export function SettingsPage({ skillsStore, approvalsStore }: SettingsPageProps)
       <div className="settings-tabs">
         <button
           type="button"
+          className={tab === 'agents' ? 'btn btn-primary' : 'btn btn-ghost'}
+          onClick={() => setTab('agents')}
+        >
+          Agents
+        </button>
+        <button
+          type="button"
           className={tab === 'skills' ? 'btn btn-primary' : 'btn btn-ghost'}
           onClick={() => setTab('skills')}
         >
@@ -288,7 +299,14 @@ export function SettingsPage({ skillsStore, approvalsStore }: SettingsPageProps)
         ) : null}
       </div>
 
-      {tab === 'skills' ? (
+      {tab === 'agents' ? (
+        <AgentsTab
+          agentsStore={agentsStore}
+          board={board}
+          gmailConnected={gmail?.status === 'connected'}
+          slackConnected={slackStatus?.status === 'connected'}
+        />
+      ) : tab === 'skills' ? (
         <div style={{ display: 'grid', gap: 12 }}>
           {skillError ? <div style={{ color: '#b91c1c', fontSize: 13 }}>{skillError}</div> : null}
 
