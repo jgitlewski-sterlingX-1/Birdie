@@ -1037,25 +1037,40 @@ app.get('/api/integrations', async (req, res) => {
   const claudeConn = session ? await getConnection(session.user.id, 'claude') : null;
   const defaultAccount = getDefaultGmailAccount();
 
+  // Gmail is connected if the in-memory account list has an entry OR if the
+  // current session has a token with Gmail scopes (handles multi-instance Cloud
+  // Run where another instance processed the login and populated its own memory).
+  const sessionEmail = session?.user?.email ?? null;
+  const sessionHasGmailToken = !!(session?.tokens);
+  const gmailConnected = !!(defaultAccount || sessionHasGmailToken);
+  const gmailEmail = defaultAccount?.accountEmail ?? sessionEmail;
+  const gmailDomain = defaultAccount?.userDomain ?? session?.user?.domain ?? null;
+
+  // Claude is connected if the user stored their own key OR if a platform-level
+  // ANTHROPIC_API_KEY is configured (the triage endpoints fall back to it).
+  const claudeConnected = !!(claudeConn || process.env.ANTHROPIC_API_KEY);
+
   res.json({
     gmail: {
-      status: defaultAccount ? 'connected' : 'disconnected',
-      accountEmail: defaultAccount?.accountEmail ?? null,
-      userDomain: defaultAccount?.userDomain ?? null,
+      status: gmailConnected ? 'connected' : 'disconnected',
+      accountEmail: gmailEmail,
+      userDomain: gmailDomain,
       lastConnectedAt: defaultAccount?.lastConnectedAt ?? null,
       scopes: defaultAccount?.scopes ?? GMAIL_SCOPES,
-      defaultAccountEmail: defaultGmailAccountEmail,
-      accounts: gmailAccounts.map((account) => ({
-        accountEmail: account.accountEmail,
-        userDomain: account.userDomain,
-        lastConnectedAt: account.lastConnectedAt,
-        scopes: account.scopes,
-        source: account.source,
-      })),
+      defaultAccountEmail: defaultGmailAccountEmail ?? gmailEmail,
+      accounts: gmailConnected && gmailAccounts.length === 0 && sessionEmail
+        ? [{ accountEmail: sessionEmail, userDomain: gmailDomain, lastConnectedAt: null, scopes: AUTH_SCOPES, source: 'auth-login' }]
+        : gmailAccounts.map((account) => ({
+            accountEmail: account.accountEmail,
+            userDomain: account.userDomain,
+            lastConnectedAt: account.lastConnectedAt,
+            scopes: account.scopes,
+            source: account.source,
+          })),
     },
     claude: {
-      status: claudeConn ? 'connected' : 'disconnected',
-      accountLabel: claudeConn?.accountLabel ?? null,
+      status: claudeConnected ? 'connected' : 'disconnected',
+      accountLabel: claudeConn?.accountLabel ?? (process.env.ANTHROPIC_API_KEY ? 'Platform key' : null),
       platformKeyAvailable: !!process.env.ANTHROPIC_API_KEY,
       model: process.env.ANTHROPIC_MODEL || 'claude-sonnet-4-6',
     },

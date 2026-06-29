@@ -233,9 +233,7 @@ export function SettingsPage({ skillsStore, approvalsStore, agentsStore, board }
       details:
         claudeStatus?.status === 'connected'
           ? [claudeStatus.accountLabel ?? 'Your API key', `Model: ${claudeStatus.model}`]
-          : claudeStatus?.platformKeyAvailable
-            ? ['Click to connect your own key (shared key in use)']
-            : ['Click to connect your Anthropic API key'],
+          : ['Click to connect your Anthropic API key'],
     },
     {
       key: 'gmail',
