@@ -207,6 +207,8 @@ function AuthenticatedShell() {
 
   // User-visible status of the last email pull.
   const [pollStatus, setPollStatus] = useState<string | null>(null)
+  const [lastPulled, setLastPulled] = useState<Date | null>(null)
+  const [nextPull, setNextPull] = useState<Date | null>(null)
 
   // Voice instructions used for auto-drafting replies (the "Reply Voice" skill).
   const voiceInstructions = useMemo(
@@ -352,15 +354,18 @@ function AuthenticatedShell() {
       const message = error instanceof Error ? error.message : 'Poll failed'
       setPollStatus(`Pull failed: ${message}`)
       console.error('[Email Agent] Poll failed:', error)
+    } finally {
+      const now = new Date()
+      setLastPulled(now)
+      setNextPull(new Date(now.getTime() + 10 * 60 * 1000))
     }
   }, [sessionId, ingestEmailCard, agentsStore])
 
-  // Pull on login, then every 30s. The initial pull is deferred off the
-  // synchronous effect body so its status update doesn't cascade renders.
+  // Pull immediately on login, then every 10 minutes.
   useEffect(() => {
     if (!sessionId) return
     const initial = window.setTimeout(() => void pullInbox(), 0)
-    const timer = window.setInterval(() => void pullInbox(), 30000)
+    const timer = window.setInterval(() => void pullInbox(), 10 * 60 * 1000)
     return () => {
       window.clearTimeout(initial)
       window.clearInterval(timer)
@@ -409,7 +414,7 @@ function AuthenticatedShell() {
   useEffect(() => {
     if (!sessionId) return
     const initial = window.setTimeout(() => void pullSlack(), 0)
-    const timer = window.setInterval(() => void pullSlack(), 30000)
+    const timer = window.setInterval(() => void pullSlack(), 10 * 60 * 1000)
     return () => {
       window.clearTimeout(initial)
       window.clearInterval(timer)
@@ -437,6 +442,8 @@ function AuthenticatedShell() {
             onSimulateSlack={() => ingestSlackCard(SAMPLE_SLACK)}
             onPullInbox={pullInbox}
             pollStatus={pollStatus}
+            lastPulled={lastPulled}
+            nextPull={nextPull}
             onCreateProject={projectsStore.addProject}
             sessionId={sessionId ?? ''}
             voiceInstructions={voiceInstructions}

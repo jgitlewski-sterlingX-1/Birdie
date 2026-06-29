@@ -1,4 +1,4 @@
-import { useMemo } from 'react'
+import { useMemo, useState, useEffect } from 'react'
 import type { Card, Project, User } from '../types'
 import type { useBoard } from '../store'
 import type { useApprovals } from '../approvalsStore'
@@ -23,6 +23,8 @@ interface HomePageProps {
   onSimulateSlack: () => void
   onPullInbox: () => void
   pollStatus: string | null
+  lastPulled?: Date | null
+  nextPull?: Date | null
   onCreateProject: (name: string, description?: string) => string
   sessionId: string
   voiceInstructions: string
@@ -43,6 +45,8 @@ export function HomePage({
   onSimulateSlack,
   onPullInbox,
   pollStatus,
+  lastPulled,
+  nextPull,
   onCreateProject,
   sessionId,
   voiceInstructions,
@@ -74,11 +78,7 @@ export function HomePage({
         <div>
           <div className="page-title">Board</div>
           <div className="page-subtitle">AI triage workspace</div>
-          {pollStatus ? (
-            <div className="page-subtitle" style={{ color: '#64748b', marginTop: 4 }}>
-              {pollStatus}
-            </div>
-          ) : null}
+          <InboxStatus lastPulled={lastPulled ?? null} nextPull={nextPull ?? null} message={pollStatus} />
         </div>
         <div style={{ display: 'flex', gap: 8 }}>
           <button type="button" className="btn btn-primary" onClick={onPullInbox}>
@@ -147,6 +147,63 @@ export function HomePage({
             })
           }}
         />
+      ) : null}
+    </div>
+  )
+}
+
+function InboxStatus({
+  lastPulled,
+  nextPull,
+  message,
+}: {
+  lastPulled: Date | null
+  nextPull: Date | null
+  message: string | null
+}) {
+  const [now, setNow] = useState(() => Date.now())
+
+  useEffect(() => {
+    const t = setInterval(() => setNow(Date.now()), 30_000)
+    return () => clearInterval(t)
+  }, [])
+
+  function fmtTime(d: Date) {
+    return d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })
+  }
+
+  function ago(d: Date) {
+    const mins = Math.round((now - d.getTime()) / 60_000)
+    if (mins < 1) return 'just now'
+    if (mins === 1) return '1 min ago'
+    return `${mins} min ago`
+  }
+
+  function inMin(d: Date) {
+    const mins = Math.round((d.getTime() - now) / 60_000)
+    if (mins <= 0) return 'now'
+    if (mins === 1) return '1 min'
+    return `${mins} min`
+  }
+
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 16, marginTop: 6, fontSize: 11, color: '#64748b', flexWrap: 'wrap' }}>
+      {lastPulled ? (
+        <span style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+          <span style={{ width: 6, height: 6, borderRadius: '50%', background: '#22c55e', display: 'inline-block', flexShrink: 0 }} />
+          Last pulled {fmtTime(lastPulled)} ({ago(lastPulled)})
+        </span>
+      ) : (
+        <span style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+          <span style={{ width: 6, height: 6, borderRadius: '50%', background: '#94a3b8', display: 'inline-block', flexShrink: 0 }} />
+          Not yet pulled
+        </span>
+      )}
+      {nextPull ? (
+        <span>Next pull in {inMin(nextPull)} ({fmtTime(nextPull)})</span>
+      ) : null}
+      {message ? (
+        <span style={{ color: '#94a3b8' }}>— {message}</span>
       ) : null}
     </div>
   )
