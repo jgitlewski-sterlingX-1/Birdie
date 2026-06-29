@@ -249,255 +249,6 @@ export function CardModal({
             </button>
           </div>
 
-          {card.source === 'gmail' ? (
-            <section style={{ display: 'grid', gap: 8 }}>
-              <div style={{ display: 'flex', gap: 8 }}>
-                <button
-                  type="button"
-                  className={`btn ${emailAction === 'delegate' ? 'btn-primary' : 'btn-ghost'}`}
-                  onClick={() => setEmailAction(emailAction === 'delegate' ? null : 'delegate')}
-                >
-                  Delegate
-                </button>
-                <button
-                  type="button"
-                  className={`btn ${emailAction === 'draft' ? 'btn-primary' : 'btn-ghost'}`}
-                  onClick={() => setEmailAction(emailAction === 'draft' ? null : 'draft')}
-                >
-                  Write Draft
-                </button>
-                <button
-                  type="button"
-                  className={`btn ${emailAction === 'ignore' ? 'btn-primary' : 'btn-ghost'}`}
-                  style={emailAction === 'ignore' ? {} : { color: '#b91c1c' }}
-                  onClick={() => {
-                    setEmailAction(emailAction === 'ignore' ? null : 'ignore')
-                    setShowRuleBuilder(false)
-                  }}
-                >
-                  Ignore
-                </button>
-                <button
-                  type="button"
-                  className={`btn ${emailAction === 'todo' ? 'btn-primary' : 'btn-ghost'}`}
-                  style={emailAction === 'todo' ? {} : { color: '#0369a1' }}
-                  onClick={() => setEmailAction(emailAction === 'todo' ? null : 'todo')}
-                >
-                  → To-Do
-                </button>
-              </div>
-
-              {emailAction === 'ignore' ? (
-                <div
-                  className="panel"
-                  style={{ padding: 12, display: 'grid', gap: 10, background: '#fff7f7', borderColor: '#fecaca' }}
-                >
-                  <div style={{ fontSize: 13, color: '#7f1d1d', fontWeight: 500 }}>
-                    Ignore this email
-                  </div>
-                  <div style={{ display: 'flex', gap: 8 }}>
-                    <button
-                      type="button"
-                      className="btn btn-ghost"
-                      style={{ fontSize: 12 }}
-                      onClick={() => {
-                        onUpdateCard(card.id, { completed: true })
-                        onClose()
-                      }}
-                    >
-                      Just Ignore
-                    </button>
-                    <button
-                      type="button"
-                      className="btn btn-ghost"
-                      style={{ fontSize: 12 }}
-                      onClick={() => setShowRuleBuilder((v) => !v)}
-                    >
-                      {showRuleBuilder ? 'Hide rule builder' : '+ Add ignore rule'}
-                    </button>
-                  </div>
-
-                  {showRuleBuilder ? (
-                    <div style={{ display: 'grid', gap: 8, borderTop: '1px solid #fecaca', paddingTop: 10 }}>
-                      <span style={{ fontSize: 12, fontWeight: 600, color: '#374151' }}>
-                        Auto-ignore future emails matching this rule:
-                      </span>
-                      <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-                        <select
-                          value={ruleField}
-                          onChange={(e) => setRuleField(e.target.value as RuleConditionField)}
-                          style={{ border: '1px solid #cbd5e1', borderRadius: 6, padding: '4px 6px', fontSize: 12 }}
-                        >
-                          <option value="from">From</option>
-                          <option value="domain">Domain</option>
-                          <option value="subject">Subject</option>
-                        </select>
-                        <select
-                          value={ruleOperator}
-                          onChange={(e) => setRuleOperator(e.target.value as 'contains' | 'equals')}
-                          style={{ border: '1px solid #cbd5e1', borderRadius: 6, padding: '4px 6px', fontSize: 12 }}
-                        >
-                          <option value="contains">contains</option>
-                          <option value="equals">equals</option>
-                        </select>
-                        <input
-                          value={ruleValue}
-                          onChange={(e) => setRuleValue(e.target.value)}
-                          placeholder="Value…"
-                          style={{
-                            border: '1px solid #cbd5e1',
-                            borderRadius: 6,
-                            padding: '4px 6px',
-                            fontSize: 12,
-                            flex: 1,
-                            minWidth: 120,
-                          }}
-                        />
-                      </div>
-                      <input
-                        value={ruleNote}
-                        onChange={(e) => setRuleNote(e.target.value)}
-                        placeholder="Note (optional)"
-                        style={{
-                          border: '1px solid #cbd5e1',
-                          borderRadius: 6,
-                          padding: '4px 6px',
-                          fontSize: 12,
-                        }}
-                      />
-                      <button
-                        type="button"
-                        className="btn btn-primary"
-                        style={{ fontSize: 12, justifySelf: 'start' }}
-                        disabled={!ruleValue.trim() || !emailGroupsStore}
-                        onClick={() => {
-                          if (!ruleValue.trim() || !emailGroupsStore) return
-                          emailGroupsStore.addRule(
-                            { field: ruleField, operator: ruleOperator, value: ruleValue.trim() },
-                            ruleNote.trim() || undefined
-                          )
-                          onUpdateCard(card.id, { completed: true })
-                          onClose()
-                        }}
-                      >
-                        Save Rule & Ignore
-                      </button>
-                    </div>
-                  ) : null}
-                </div>
-              ) : null}
-
-              {emailAction === 'todo' ? (() => {
-                const allAssigned =
-                  !!todoAssigneeId &&
-                  !!todoCardDueDate &&
-                  subtasks.every((s) => !!subtaskAssignees[s.id] && !!subtaskDueDates[s.id])
-
-                const applyToAll = (assigneeId: string, dueDate: string) => {
-                  if (assigneeId) setSubtaskAssignees(Object.fromEntries(subtasks.map((s) => [s.id, assigneeId])))
-                  if (dueDate) setSubtaskDueDates(Object.fromEntries(subtasks.map((s) => [s.id, dueDate])))
-                }
-
-                return (
-                  <div
-                    className="panel"
-                    style={{ padding: 14, display: 'grid', gap: 12, background: '#f0f9ff', borderColor: '#7dd3fc' }}
-                  >
-                    <div style={{ fontSize: 13, fontWeight: 600, color: '#0c4a6e' }}>
-                      Assign &amp; schedule before moving to To-Do
-                    </div>
-
-                    {/* Card-level row */}
-                    <div style={{ display: 'grid', gap: 4 }}>
-                      <span style={{ fontSize: 11, fontWeight: 600, color: '#334155', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
-                        This card
-                      </span>
-                      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-                        <select
-                          value={todoAssigneeId}
-                          onChange={(e) => {
-                            setTodoAssigneeId(e.target.value)
-                            applyToAll(e.target.value, '')
-                          }}
-                          style={{ border: '1px solid #7dd3fc', borderRadius: 6, padding: '5px 8px', fontSize: 12, flex: 1, minWidth: 140 }}
-                        >
-                          <option value="">Assign to…</option>
-                          {users.map((u) => (
-                            <option key={u.id} value={u.id}>{u.name}</option>
-                          ))}
-                        </select>
-                        <input
-                          type="date"
-                          value={todoCardDueDate}
-                          onChange={(e) => {
-                            setTodoCardDueDate(e.target.value)
-                            applyToAll('', e.target.value)
-                          }}
-                          style={{ border: '1px solid #7dd3fc', borderRadius: 6, padding: '5px 8px', fontSize: 12 }}
-                        />
-                      </div>
-                      <span style={{ fontSize: 11, color: '#64748b' }}>
-                        Changing assignee or date here fills all subtasks — edit individually below if needed.
-                      </span>
-                    </div>
-
-                    {/* Per-subtask rows */}
-                    {subtasks.length > 0 ? (
-                      <div style={{ display: 'grid', gap: 8 }}>
-                        <span style={{ fontSize: 11, fontWeight: 600, color: '#334155', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
-                          Subtasks
-                        </span>
-                        {subtasks.map((s) => (
-                          <div key={s.id} style={{ display: 'grid', gap: 4 }}>
-                            <span style={{ fontSize: 12, color: '#1e293b' }}>{s.title}</span>
-                            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-                              <select
-                                value={subtaskAssignees[s.id] ?? ''}
-                                onChange={(e) => setSubtaskAssignees((prev) => ({ ...prev, [s.id]: e.target.value }))}
-                                style={{ border: '1px solid #bfdbfe', borderRadius: 6, padding: '4px 6px', fontSize: 12, flex: 1, minWidth: 120 }}
-                              >
-                                <option value="">Assign to…</option>
-                                {users.map((u) => (
-                                  <option key={u.id} value={u.id}>{u.name}</option>
-                                ))}
-                              </select>
-                              <input
-                                type="date"
-                                value={subtaskDueDates[s.id] ?? ''}
-                                onChange={(e) => setSubtaskDueDates((prev) => ({ ...prev, [s.id]: e.target.value }))}
-                                style={{ border: '1px solid #bfdbfe', borderRadius: 6, padding: '4px 6px', fontSize: 12 }}
-                              />
-                            </div>
-                          </div>
-                        ))}
-                      </div>
-                    ) : null}
-
-                    <button
-                      type="button"
-                      className="btn btn-primary"
-                      disabled={!allAssigned}
-                      style={{ justifySelf: 'start', fontSize: 13, opacity: allAssigned ? 1 : 0.5 }}
-                      onClick={() => {
-                        onUpdateCard(card.id, { assigneeId: todoAssigneeId, dueDate: todoCardDueDate })
-                        subtasks.forEach((s) => {
-                          onUpdateCard(s.id, {
-                            assigneeId: subtaskAssignees[s.id] || todoAssigneeId,
-                            dueDate: subtaskDueDates[s.id] || todoCardDueDate,
-                          })
-                        })
-                        onMoveCard(card.id, 'col-todo', 0)
-                        onClose()
-                      }}
-                    >
-                      Move to To-Do
-                    </button>
-                  </div>
-                )
-              })() : null}
-            </section>
-          ) : null}
-
           {card.source === 'gmail' && card.emailThread && card.emailThread.length > 0 ? (
             <section style={{ display: 'grid', gap: 6 }}>
               <span style={{ fontWeight: 600 }}>Email thread</span>
@@ -596,39 +347,188 @@ export function CardModal({
             </div>
           </section>
 
-          {card.source === 'gmail' && (emailAction === 'draft' || !!card.draft) ? (
-            <section className="panel" style={{ padding: 10, display: 'grid', gap: 8 }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                <h3>Reply composer</h3>
-                {has('voice_drafting') ? (
-                  <button
-                    type="button"
-                    className="btn btn-ghost"
-                    onClick={() => void runDraft()}
-                    disabled={draftLoading}
-                  >
-                    {draftLoading ? 'Drafting…' : draft ? 'Regenerate in my voice' : 'Draft in my voice'}
-                  </button>
-                ) : null}
-              </div>
-              {draftLoading ? (
-                <div style={{ fontSize: 12, color: '#64748b' }}>Drafting a reply in your voice…</div>
-              ) : null}
-              {draftError ? (
-                <div style={{ fontSize: 12, color: '#b91c1c' }}>{draftError}</div>
-              ) : null}
-              <textarea
-                rows={6}
-                value={draft}
-                onChange={(e) => setDraft(e.target.value)}
-                placeholder={draftLoading ? 'Drafting in your voice…' : 'Write a draft reply...'}
-                style={{ border: '1px solid #cbd5e1', borderRadius: 8, padding: 8 }}
-              />
-              <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
-                <button type="button" className="btn btn-primary" onClick={approveGmailDraft}>
-                  Approve draft
+          {card.source === 'gmail' ? (
+            <section style={{ display: 'grid', gap: 8, borderTop: '1px solid #e2e8f0', paddingTop: 14, marginTop: 4 }}>
+              {/* Action bar */}
+              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                <button
+                  type="button"
+                  className={`btn ${emailAction === 'delegate' ? 'btn-primary' : 'btn-ghost'}`}
+                  onClick={() => setEmailAction(emailAction === 'delegate' ? null : 'delegate')}
+                >
+                  Delegate
+                </button>
+                <button
+                  type="button"
+                  className={`btn ${emailAction === 'draft' ? 'btn-primary' : 'btn-ghost'}`}
+                  onClick={() => setEmailAction(emailAction === 'draft' ? null : 'draft')}
+                >
+                  Write Draft
+                </button>
+                <button
+                  type="button"
+                  className={`btn ${emailAction === 'ignore' ? 'btn-primary' : 'btn-ghost'}`}
+                  style={emailAction === 'ignore' ? {} : { color: '#b91c1c' }}
+                  onClick={() => {
+                    setEmailAction(emailAction === 'ignore' ? null : 'ignore')
+                    setShowRuleBuilder(false)
+                  }}
+                >
+                  Ignore
+                </button>
+                <button
+                  type="button"
+                  className={`btn ${emailAction === 'todo' ? 'btn-primary' : 'btn-ghost'}`}
+                  style={emailAction === 'todo' ? {} : { color: '#0369a1' }}
+                  onClick={() => setEmailAction(emailAction === 'todo' ? null : 'todo')}
+                >
+                  → To-Do
                 </button>
               </div>
+
+              {/* Ignore panel */}
+              {emailAction === 'ignore' ? (
+                <div className="panel" style={{ padding: 12, display: 'grid', gap: 10, background: '#fff7f7', borderColor: '#fecaca' }}>
+                  <div style={{ fontSize: 13, color: '#7f1d1d', fontWeight: 500 }}>Ignore this email</div>
+                  <div style={{ display: 'flex', gap: 8 }}>
+                    <button type="button" className="btn btn-ghost" style={{ fontSize: 12 }}
+                      onClick={() => { onUpdateCard(card.id, { completed: true }); onClose() }}>
+                      Just Ignore
+                    </button>
+                    <button type="button" className="btn btn-ghost" style={{ fontSize: 12 }}
+                      onClick={() => setShowRuleBuilder((v) => !v)}>
+                      {showRuleBuilder ? 'Hide rule builder' : '+ Add ignore rule'}
+                    </button>
+                  </div>
+                  {showRuleBuilder ? (
+                    <div style={{ display: 'grid', gap: 8, borderTop: '1px solid #fecaca', paddingTop: 10 }}>
+                      <span style={{ fontSize: 12, fontWeight: 600, color: '#374151' }}>
+                        Auto-ignore future emails matching this rule:
+                      </span>
+                      <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                        <select value={ruleField} onChange={(e) => setRuleField(e.target.value as RuleConditionField)}
+                          style={{ border: '1px solid #cbd5e1', borderRadius: 6, padding: '4px 6px', fontSize: 12 }}>
+                          <option value="from">From</option>
+                          <option value="domain">Domain</option>
+                          <option value="subject">Subject</option>
+                        </select>
+                        <select value={ruleOperator} onChange={(e) => setRuleOperator(e.target.value as 'contains' | 'equals')}
+                          style={{ border: '1px solid #cbd5e1', borderRadius: 6, padding: '4px 6px', fontSize: 12 }}>
+                          <option value="contains">contains</option>
+                          <option value="equals">equals</option>
+                        </select>
+                        <input value={ruleValue} onChange={(e) => setRuleValue(e.target.value)} placeholder="Value…"
+                          style={{ border: '1px solid #cbd5e1', borderRadius: 6, padding: '4px 6px', fontSize: 12, flex: 1, minWidth: 120 }} />
+                      </div>
+                      <input value={ruleNote} onChange={(e) => setRuleNote(e.target.value)} placeholder="Note (optional)"
+                        style={{ border: '1px solid #cbd5e1', borderRadius: 6, padding: '4px 6px', fontSize: 12 }} />
+                      <button type="button" className="btn btn-primary" style={{ fontSize: 12, justifySelf: 'start' }}
+                        disabled={!ruleValue.trim() || !emailGroupsStore}
+                        onClick={() => {
+                          if (!ruleValue.trim() || !emailGroupsStore) return
+                          emailGroupsStore.addRule(
+                            { field: ruleField, operator: ruleOperator, value: ruleValue.trim() },
+                            ruleNote.trim() || undefined
+                          )
+                          onUpdateCard(card.id, { completed: true })
+                          onClose()
+                        }}>
+                        Save Rule & Ignore
+                      </button>
+                    </div>
+                  ) : null}
+                </div>
+              ) : null}
+
+              {/* To-Do assignment panel */}
+              {emailAction === 'todo' ? (() => {
+                const allAssigned =
+                  !!todoAssigneeId &&
+                  !!todoCardDueDate &&
+                  subtasks.every((s) => !!subtaskAssignees[s.id] && !!subtaskDueDates[s.id])
+                const applyToAll = (assigneeId: string, dueDate: string) => {
+                  if (assigneeId) setSubtaskAssignees(Object.fromEntries(subtasks.map((s) => [s.id, assigneeId])))
+                  if (dueDate) setSubtaskDueDates(Object.fromEntries(subtasks.map((s) => [s.id, dueDate])))
+                }
+                return (
+                  <div className="panel" style={{ padding: 14, display: 'grid', gap: 12, background: '#f0f9ff', borderColor: '#7dd3fc' }}>
+                    <div style={{ fontSize: 13, fontWeight: 600, color: '#0c4a6e' }}>Assign &amp; schedule before moving to To-Do</div>
+                    <div style={{ display: 'grid', gap: 4 }}>
+                      <span style={{ fontSize: 11, fontWeight: 600, color: '#334155', textTransform: 'uppercase', letterSpacing: '0.05em' }}>This card</span>
+                      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                        <select value={todoAssigneeId}
+                          onChange={(e) => { setTodoAssigneeId(e.target.value); applyToAll(e.target.value, '') }}
+                          style={{ border: '1px solid #7dd3fc', borderRadius: 6, padding: '5px 8px', fontSize: 12, flex: 1, minWidth: 140 }}>
+                          <option value="">Assign to…</option>
+                          {users.map((u) => <option key={u.id} value={u.id}>{u.name}</option>)}
+                        </select>
+                        <input type="date" value={todoCardDueDate}
+                          onChange={(e) => { setTodoCardDueDate(e.target.value); applyToAll('', e.target.value) }}
+                          style={{ border: '1px solid #7dd3fc', borderRadius: 6, padding: '5px 8px', fontSize: 12 }} />
+                      </div>
+                      <span style={{ fontSize: 11, color: '#64748b' }}>Changing assignee or date here fills all subtasks — edit individually below if needed.</span>
+                    </div>
+                    {subtasks.length > 0 ? (
+                      <div style={{ display: 'grid', gap: 8 }}>
+                        <span style={{ fontSize: 11, fontWeight: 600, color: '#334155', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Subtasks</span>
+                        {subtasks.map((s) => (
+                          <div key={s.id} style={{ display: 'grid', gap: 4 }}>
+                            <span style={{ fontSize: 12, color: '#1e293b' }}>{s.title}</span>
+                            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                              <select value={subtaskAssignees[s.id] ?? ''}
+                                onChange={(e) => setSubtaskAssignees((prev) => ({ ...prev, [s.id]: e.target.value }))}
+                                style={{ border: '1px solid #bfdbfe', borderRadius: 6, padding: '4px 6px', fontSize: 12, flex: 1, minWidth: 120 }}>
+                                <option value="">Assign to…</option>
+                                {users.map((u) => <option key={u.id} value={u.id}>{u.name}</option>)}
+                              </select>
+                              <input type="date" value={subtaskDueDates[s.id] ?? ''}
+                                onChange={(e) => setSubtaskDueDates((prev) => ({ ...prev, [s.id]: e.target.value }))}
+                                style={{ border: '1px solid #bfdbfe', borderRadius: 6, padding: '4px 6px', fontSize: 12 }} />
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    ) : null}
+                    <button type="button" className="btn btn-primary" disabled={!allAssigned}
+                      style={{ justifySelf: 'start', fontSize: 13, opacity: allAssigned ? 1 : 0.5 }}
+                      onClick={() => {
+                        onUpdateCard(card.id, { assigneeId: todoAssigneeId, dueDate: todoCardDueDate })
+                        subtasks.forEach((s) => {
+                          onUpdateCard(s.id, {
+                            assigneeId: subtaskAssignees[s.id] || todoAssigneeId,
+                            dueDate: subtaskDueDates[s.id] || todoCardDueDate,
+                          })
+                        })
+                        onMoveCard(card.id, 'col-todo', 0)
+                        onClose()
+                      }}>
+                      Move to To-Do
+                    </button>
+                  </div>
+                )
+              })() : null}
+
+              {/* Draft composer */}
+              {(emailAction === 'draft' || !!card.draft) ? (
+                <section className="panel" style={{ padding: 10, display: 'grid', gap: 8 }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <h3>Reply composer</h3>
+                    {has('voice_drafting') ? (
+                      <button type="button" className="btn btn-ghost" onClick={() => void runDraft()} disabled={draftLoading}>
+                        {draftLoading ? 'Drafting…' : draft ? 'Regenerate in my voice' : 'Draft in my voice'}
+                      </button>
+                    ) : null}
+                  </div>
+                  {draftLoading ? <div style={{ fontSize: 12, color: '#64748b' }}>Drafting a reply in your voice…</div> : null}
+                  {draftError ? <div style={{ fontSize: 12, color: '#b91c1c' }}>{draftError}</div> : null}
+                  <textarea rows={6} value={draft} onChange={(e) => setDraft(e.target.value)}
+                    placeholder={draftLoading ? 'Drafting in your voice…' : 'Write a draft reply...'}
+                    style={{ border: '1px solid #cbd5e1', borderRadius: 8, padding: 8 }} />
+                  <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+                    <button type="button" className="btn btn-primary" onClick={approveGmailDraft}>Approve draft</button>
+                  </div>
+                </section>
+              ) : null}
             </section>
           ) : null}
         </div>
