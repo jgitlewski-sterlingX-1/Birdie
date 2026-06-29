@@ -344,15 +344,64 @@ export function CardModal({
             </section>
           ) : null}
 
-          <label style={{ display: 'grid', gap: 6 }}>
-            <span style={{ fontWeight: 600 }}>Description</span>
-            <textarea
-              rows={4}
-              value={card.description ?? ''}
-              onChange={(e) => onUpdateCard(card.id, { description: e.target.value })}
-              style={{ border: '1px solid #cbd5e1', borderRadius: 8, padding: 8 }}
-            />
-          </label>
+          {card.source === 'gmail' && card.emailThread && card.emailThread.length > 0 ? (
+            <section style={{ display: 'grid', gap: 6 }}>
+              <span style={{ fontWeight: 600 }}>Email thread</span>
+              <div style={{ display: 'grid', gap: 10 }}>
+                {card.emailThread.map((msg, i) => (
+                  <div
+                    key={i}
+                    style={{
+                      border: '1px solid #e2e8f0',
+                      borderRadius: 8,
+                      overflow: 'hidden',
+                    }}
+                  >
+                    <div style={{
+                      background: '#f8fafc',
+                      borderBottom: '1px solid #e2e8f0',
+                      padding: '6px 12px',
+                      display: 'flex',
+                      gap: 12,
+                      alignItems: 'baseline',
+                      flexWrap: 'wrap',
+                    }}>
+                      <span style={{ fontSize: 12, fontWeight: 600, color: '#1e293b' }}>{msg.from}</span>
+                      {msg.date ? (
+                        <span style={{ fontSize: 11, color: '#94a3b8' }}>
+                          {new Date(msg.date).toLocaleString(undefined, {
+                            month: 'short', day: 'numeric', year: 'numeric',
+                            hour: 'numeric', minute: '2-digit',
+                          })}
+                        </span>
+                      ) : null}
+                    </div>
+                    <div style={{
+                      padding: '10px 12px',
+                      fontSize: 13,
+                      color: '#334155',
+                      whiteSpace: 'pre-wrap',
+                      lineHeight: 1.6,
+                      maxHeight: 320,
+                      overflowY: 'auto',
+                    }}>
+                      {msg.body}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </section>
+          ) : (
+            <label style={{ display: 'grid', gap: 6 }}>
+              <span style={{ fontWeight: 600 }}>Description</span>
+              <textarea
+                rows={4}
+                value={card.description ?? ''}
+                onChange={(e) => onUpdateCard(card.id, { description: e.target.value })}
+                style={{ border: '1px solid #cbd5e1', borderRadius: 8, padding: 8 }}
+              />
+            </label>
+          )}
 
           <section className="panel" style={{ padding: 10 }}>
             <h3 style={{ marginBottom: 8 }}>Subtasks</h3>
