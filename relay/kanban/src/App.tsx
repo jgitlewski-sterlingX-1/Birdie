@@ -210,6 +210,22 @@ function AuthenticatedShell() {
   const [lastPulled, setLastPulled] = useState<Date | null>(null)
   const [nextPull, setNextPull] = useState<Date | null>(null)
 
+  // Persistent set of message IDs that were filtered out by agent rules. Stored
+  // in localStorage so they stay suppressed across server restarts and sessions.
+  const suppressedEmailIdsRef = useRef<Set<string>>(new Set())
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem('birdie:suppressed-email-ids')
+      if (raw) suppressedEmailIdsRef.current = new Set(JSON.parse(raw) as string[])
+    } catch { /* corrupt entry — start fresh */ }
+  }, [])
+  const suppressEmailId = useCallback((id: string) => {
+    suppressedEmailIdsRef.current.add(id)
+    try {
+      localStorage.setItem('birdie:suppressed-email-ids', JSON.stringify(Array.from(suppressedEmailIdsRef.current)))
+    } catch { /* storage full — skip persistence */ }
+  }, [])
+
   // Voice instructions used for auto-drafting replies (the "Reply Voice" skill).
   const voiceInstructions = useMemo(
     () => skillsStore.allSkills.find((s) => s.id === 'base-email-voice' && s.enabled)?.instructions ?? '',
@@ -327,14 +343,19 @@ function AuthenticatedShell() {
           .map((c) => c.externalId)
           .filter(Boolean)
       )
-      const fresh = emails.filter((e) => !existingExternalIds.has(e.messageId))
+      const fresh = emails.filter(
+        (e) => !existingExternalIds.has(e.messageId) && !suppressedEmailIdsRef.current.has(e.messageId)
+      )
       let ingested = 0
       for (const email of fresh) {
         const filterResult = applyEmailFilters(
           email as IncomingEmail,
           emailAgentConfig.filters
         )
-        if (filterResult === 'skip') continue
+        if (filterResult === 'skip') {
+          suppressEmailId(email.messageId)
+          continue
+        }
         const priority: Priority | undefined =
           filterResult === 'escalate' || filterResult === 'flag' ? 'high' : undefined
         ingestEmailCard(email as IncomingEmail, priority)
