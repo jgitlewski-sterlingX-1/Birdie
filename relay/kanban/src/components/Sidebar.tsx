@@ -1,4 +1,3 @@
-import { USERS } from '../users'
 import type { User } from '../types'
 import { useSession } from '../session'
 
@@ -11,7 +10,7 @@ interface SidebarProps {
 }
 
 export function Sidebar({ currentView, onNavigate, currentUser }: SidebarProps) {
-  const { setCurrentUser, authenticated, authUser, logout } = useSession()
+  const { authenticated, authUser, logout } = useSession()
 
   return (
     <aside className="sidebar">
@@ -46,21 +45,15 @@ export function Sidebar({ currentView, onNavigate, currentUser }: SidebarProps) 
       </nav>
 
       <div className="sidebar-footer">
-        <div style={{ fontSize: 12, color: '#94a3b8' }}>
-          {authenticated ? 'Authenticated user' : 'Current user'}
-        </div>
-        {authenticated && authUser ? (
+        {authenticated ? (
           <div>
             <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12 }}>
-              <span
-                className="avatar"
-                style={{ background: '#6366f1' }}
-              >
-                {authUser.name.slice(0, 1).toUpperCase()}
+              <span className="avatar" style={{ background: currentUser.avatarColor }}>
+                {currentUser.name.slice(0, 1).toUpperCase()}
               </span>
               <div>
-                <div style={{ fontWeight: 600, fontSize: 13 }}>{authUser.name}</div>
-                <div style={{ color: '#94a3b8', fontSize: 12 }}>{authUser.email}</div>
+                <div style={{ fontWeight: 600, fontSize: 13 }}>{currentUser.name}</div>
+                <div style={{ color: '#94a3b8', fontSize: 12 }}>{currentUser.email}</div>
               </div>
             </div>
             <button
@@ -81,33 +74,7 @@ export function Sidebar({ currentView, onNavigate, currentUser }: SidebarProps) 
               Logout
             </button>
           </div>
-        ) : (
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-            <span className="avatar" style={{ background: currentUser.avatarColor }}>
-              {currentUser.name.slice(0, 1).toUpperCase()}
-            </span>
-            <div>
-              <div style={{ fontWeight: 600, fontSize: 13 }}>{currentUser.name}</div>
-              <div style={{ color: '#94a3b8', fontSize: 12 }}>{currentUser.email}</div>
-            </div>
-          </div>
-        )}
-        {!authenticated && (
-          <select
-            value={currentUser.id}
-            onChange={(e) => {
-              const next = USERS.find((u) => u.id === e.target.value)
-              if (next) setCurrentUser(next)
-            }}
-            className="sidebar-select"
-          >
-            {USERS.map((user) => (
-              <option key={user.id} value={user.id}>
-                {user.name}
-              </option>
-            ))}
-          </select>
-        )}
+        ) : null}
       </div>
     </aside>
   )

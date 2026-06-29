@@ -22,7 +22,6 @@ import { ProcessManagerPage } from './pages/ProcessManagerPage'
 import { OnboardingPage } from './pages/OnboardingPage'
 import { apiFetch } from './apiClient'
 import type { Card, Priority, AgentFilter, FilterOperator, User } from './types'
-import { USERS } from './users'
 
 function applyOp(text: string, op: FilterOperator, val: string): boolean {
   switch (op) {
@@ -164,17 +163,14 @@ function AuthenticatedShell() {
       .catch(() => { /* silently fall back to hardcoded USERS */ })
   }, [sessionId])
 
-  // Merge: directory list wins for name/email; hardcoded USERS fills the gap
-  // when directory is empty or a user isn't in the org directory yet.
+  // All users come from the Google Workspace directory. While the directory is
+  // loading (brief window after login), seed with the current user so the
+  // assignee picker isn't empty.
   const mergedUsers = useMemo<User[]>(() => {
-    if (directoryUsers.length === 0) return USERS
-    const byEmail = new Map(directoryUsers.map((u) => [u.email.toLowerCase(), u]))
-    // Keep any hardcoded user whose email doesn't appear in the directory
-    USERS.forEach((u) => {
-      if (!byEmail.has(u.email.toLowerCase())) byEmail.set(u.email.toLowerCase(), u)
-    })
-    return Array.from(byEmail.values())
-  }, [directoryUsers])
+    if (directoryUsers.length > 0) return directoryUsers
+    if (currentUser.email) return [currentUser]
+    return []
+  }, [directoryUsers, currentUser])
 
   // User-visible status of the last email pull.
   const [pollStatus, setPollStatus] = useState<string | null>(null)

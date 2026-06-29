@@ -1,9 +1,16 @@
-// src/session.tsx — current user session (OAuth + mock user selector)
+// src/session.tsx — current user session (Google OAuth)
 
-import React, { createContext, useContext, useState, useEffect } from 'react';
+import React, { createContext, useContext, useState, useEffect, useMemo } from 'react';
 import type { User } from './types';
-import { USERS } from './users';
 import { apiFetch } from './apiClient';
+
+const AVATAR_PALETTE = ['#6366f1','#10b981','#f59e0b','#ef4444','#8b5cf6','#06b6d4','#f97316','#14b8a6','#ec4899','#84cc16'];
+
+function avatarColorFromEmail(email: string): string {
+  let h = 0;
+  for (const c of email) h = ((h << 5) - h + c.charCodeAt(0)) | 0;
+  return AVATAR_PALETTE[Math.abs(h) % AVATAR_PALETTE.length];
+}
 
 interface AuthUser {
   id: string;
@@ -13,16 +20,10 @@ interface AuthUser {
 }
 
 interface SessionContextValue {
-  // Authentication
   authenticated: boolean;
   authUser: AuthUser | null;
   sessionId: string | null;
-  
-  // Mock user selector (for non-authenticated users)
   currentUser: User;
-  setCurrentUser: (user: User) => void;
-  
-  // Auth methods
   logout: () => void;
 }
 
@@ -32,7 +33,6 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
   const [authenticated, setAuthenticated] = useState(false);
   const [authUser, setAuthUser] = useState<AuthUser | null>(null);
   const [sessionId, setSessionId] = useState<string | null>(null);
-  const [currentUser, setCurrentUser] = useState<User>(USERS[0]);
 
   // Check for sessionId in URL params on mount
   useEffect(() => {
@@ -56,6 +56,20 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
     }
   }, []);
 
+  // Derive the app User from the authenticated Google account. Falls back to a
+  // placeholder before login so components that consume currentUser never crash.
+  const currentUser = useMemo<User>(() => {
+    if (authUser) {
+      return {
+        id: authUser.id,
+        email: authUser.email,
+        name: authUser.name,
+        avatarColor: avatarColorFromEmail(authUser.email),
+      };
+    }
+    return { id: '', email: '', name: '—', avatarColor: '#94a3b8' };
+  }, [authUser]);
+
   const logout = () => {
     if (sessionId) {
       apiFetch('/api/auth/logout', {
@@ -76,7 +90,6 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
         authUser,
         sessionId,
         currentUser,
-        setCurrentUser,
         logout,
       }}
     >
