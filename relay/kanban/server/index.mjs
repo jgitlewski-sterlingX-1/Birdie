@@ -92,6 +92,10 @@ const memUserRoles = new Map(); // userId -> string[]
 const memLockedUsers = new Set(); // userIds locked (in-memory fallback)
 const memConnections = new Map(); // `${userId}:${provider}` -> connection (in-memory fallback)
 
+// Sentinel userId for the platform-level Claude key. Stored the same way as a
+// user key so it survives restarts via the DB, but is shared across all users.
+const PLATFORM_USER_ID = '__platform__';
+
 // ── Per-user integration connections ────────────────────────────────────────
 // One connection per (user, provider). secret holds the API key / OAuth token.
 async function getConnection(userId, provider) {
@@ -136,6 +140,20 @@ async function deleteConnection(userId, provider) {
     return;
   }
   await dbPool.query('DELETE FROM integration_connections WHERE user_id = ? AND provider = ?', [userId, provider]);
+}
+
+// Resolve the Claude API key for a given user. Priority:
+//   1. The user's own stored key
+//   2. The platform key (written when any user connects a key)
+//   3. ANTHROPIC_API_KEY env var (last resort — not user-managed)
+async function resolveClaudeKey(userId) {
+  if (userId) {
+    const userConn = await getConnection(userId, 'claude');
+    if (userConn?.secret) return userConn.secret;
+  }
+  const platformConn = await getConnection(PLATFORM_USER_ID, 'claude');
+  if (platformConn?.secret) return platformConn.secret;
+  return process.env.ANTHROPIC_API_KEY ?? null;
 }
 
 async function initFlagSchema() {
@@ -1656,6 +1674,9 @@ app.post('/api/integrations/claude/connect', async (req, res) => {
   }
   const accountLabel = `sk-ant-…${apiKey.slice(-4)}`;
   await setConnection(session.user.id, 'claude', { accountLabel, secret: apiKey });
+  // Also write the platform key so all skill calls work for users who haven't
+  // connected their own key. This survives restarts via the DB.
+  await setConnection(PLATFORM_USER_ID, 'claude', { accountLabel, secret: apiKey });
   res.json({ ok: true, accountLabel });
 });
 
@@ -1738,8 +1759,7 @@ async function fetchSkillVersionMeta(apiKey, skillId, version) {
 }
 
 async function claudeKeyForSession(session) {
-  const conn = await getConnection(session.user.id, 'claude');
-  return (conn && conn.secret) || null;
+  return resolveClaudeKey(session?.user?.id ?? null);
 }
 
 // List the user's custom skills (filters out Anthropic's pre-built ones).
@@ -1837,8 +1857,7 @@ app.post('/api/email/draft', async (req, res) => {
     return res.status(401).json({ error: 'Unauthorized session' });
   }
 
-  const conn = await getConnection(session.user.id, 'claude');
-  const apiKey = (conn && conn.secret) || process.env.ANTHROPIC_API_KEY;
+  const apiKey = await resolveClaudeKey(session.user.id);
   if (!apiKey) {
     return res.status(400).json({ error: 'No Claude key. Connect Claude in Settings → Integrations.' });
   }
@@ -1909,8 +1928,7 @@ app.post('/api/email/triage', async (req, res) => {
   const session = getSessionById(sessionId);
   if (!session) return res.status(401).json({ error: 'Unauthorized session' });
 
-  const conn = await getConnection(session.user.id, 'claude');
-  const apiKey = (conn && conn.secret) || process.env.ANTHROPIC_API_KEY;
+  const apiKey = await resolveClaudeKey(session.user.id);
   if (!apiKey) {
     return res.status(400).json({ error: 'No Claude key. Connect Claude in Settings → Integrations.' });
   }
