@@ -384,6 +384,14 @@ export function CardModal({
                 >
                   → To-Do
                 </button>
+                <button
+                  type="button"
+                  className="btn btn-ghost"
+                  style={{ marginLeft: 'auto', color: '#b91c1c' }}
+                  onClick={() => { onDeleteCard(card.id); onClose() }}
+                >
+                  Delete
+                </button>
               </div>
 
               {/* Ignore panel */}
@@ -530,6 +538,19 @@ export function CardModal({
                 </section>
               ) : null}
             </section>
+          ) : null}
+
+          {card.source !== 'gmail' ? (
+            <div style={{ borderTop: '1px solid #e2e8f0', paddingTop: 14, marginTop: 4 }}>
+              <button
+                type="button"
+                className="btn btn-ghost"
+                style={{ color: '#b91c1c' }}
+                onClick={() => { onDeleteCard(card.id); onClose() }}
+              >
+                Delete card
+              </button>
+            </div>
           ) : null}
         </div>
 
@@ -824,16 +845,6 @@ export function CardModal({
             </div>
           </section>
 
-          <button
-            type="button"
-            className="btn btn-danger"
-            onClick={() => {
-              onDeleteCard(card.id)
-              onClose()
-            }}
-          >
-            Delete card
-          </button>
         </aside>
       </div>
     </div>
