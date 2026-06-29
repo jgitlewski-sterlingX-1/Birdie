@@ -7,7 +7,7 @@ import { useSkills } from './skillsStore'
 import { useApprovals } from './approvalsStore'
 import { useAgents } from './agentsStore'
 import { useEmailGroups } from './emailGroupsStore'
-import { pollNewEmails, pollSlackMessages } from './integrationsApi'
+import { pollNewEmails, pollSlackMessages, markEmailRead } from './integrationsApi'
 import { runEmailPipeline } from './emailSkill'
 import { triageThread } from './emailTriageApi'
 import { fetchDirectoryUsers } from './directoryApi'
@@ -188,6 +188,18 @@ function AuthenticatedShell() {
   const activeCard: Card | null = useMemo(
     () => (activeCardId ? boardStore.board.cards[activeCardId] ?? null : null),
     [activeCardId, boardStore.board.cards]
+  )
+
+  // Open a card and, if it's a Gmail card, mark the thread as read in Gmail.
+  const openCard = useCallback(
+    (cardId: string) => {
+      setActiveCardId(cardId)
+      const card = boardRef.current.cards[cardId]
+      if (card?.source === 'gmail' && card.replyMeta?.threadId && sessionId) {
+        void markEmailRead(sessionId, card.replyMeta.threadId)
+      }
+    },
+    [sessionId]
   )
 
   // Turn an incoming email into a card, run the base skill pipeline, then fire
@@ -387,7 +399,7 @@ function AuthenticatedShell() {
             users={mergedUsers}
             directoryNeedsReauth={directoryNeedsReauth}
             activeCard={activeCard}
-            onOpenCard={setActiveCardId}
+            onOpenCard={openCard}
             onCloseCard={() => setActiveCardId(null)}
             onSimulateEmail={() => setActiveCardId(ingestEmailCard(SAMPLE_EMAIL))}
             onSimulateSlack={() => ingestSlackCard(SAMPLE_SLACK)}
@@ -402,7 +414,7 @@ function AuthenticatedShell() {
           <ProjectsPage
             projectsStore={projectsStore}
             boardStore={boardStore}
-            onOpenCard={setActiveCardId}
+            onOpenCard={openCard}
           />
         ) : null}
         {view === 'process-manager' ? (

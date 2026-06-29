@@ -186,3 +186,17 @@ export async function pollNewEmails(sessionId: string): Promise<PolledEmail[]> {
   const data = (await res.json()) as { emails: PolledEmail[] };
   return data.emails ?? [];
 }
+
+// Fire-and-forget — marks the Gmail thread as read. Never throws; a failure
+// is logged server-side but doesn't surface to the user.
+export async function markEmailRead(sessionId: string, threadId: string): Promise<void> {
+  try {
+    await apiFetch('/api/email/mark-read', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sessionId, threadId }),
+    });
+  } catch {
+    // best-effort
+  }
+}

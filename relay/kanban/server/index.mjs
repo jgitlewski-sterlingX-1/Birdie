@@ -1264,6 +1264,36 @@ app.get('/api/email/poll', async (req, res) => {
   }
 });
 
+// Mark a Gmail thread as read. Best-effort — always returns { ok: true } to
+// the client so a transient failure never blocks the card from opening.
+app.post('/api/email/mark-read', async (req, res) => {
+  const sessionId = req.body?.sessionId || req.query.sessionId;
+  const session = getSessionById(sessionId);
+  if (!session) return res.status(401).json({ error: 'Unauthorized' });
+
+  const { threadId } = req.body ?? {};
+  if (!threadId) return res.status(400).json({ error: 'threadId required' });
+
+  const defaultAccount = getDefaultGmailAccount();
+  const token = defaultAccount?.token ?? session.tokens ?? null;
+  if (!token) return res.json({ ok: true });
+
+  try {
+    const oauth2Client = getOAuthClient();
+    if (!oauth2Client) return res.json({ ok: true });
+    oauth2Client.setCredentials(token);
+    const gmail = google.gmail({ version: 'v1', auth: oauth2Client });
+    await gmail.users.threads.modify({
+      userId: 'me',
+      id: threadId,
+      requestBody: { removeLabelIds: ['UNREAD'] },
+    });
+  } catch (error) {
+    console.error(`[Mark Read] ${error.message}`);
+  }
+  return res.json({ ok: true });
+});
+
 // ── Slack OAuth (user token: read + send as the user) ──────────────────────────
 
 function getSlackRedirectUri() {
