@@ -40,9 +40,15 @@ const {
 const sessions = new Map();
 const SESSION_TTL_MS = 24 * 60 * 60 * 1000; // sessions stay valid for a full day
 const GMAIL_SCOPES = ['https://www.googleapis.com/auth/gmail.readonly', 'https://www.googleapis.com/auth/gmail.compose'];
+const DIRECTORY_SCOPE = 'https://www.googleapis.com/auth/directory.readonly';
 // User-token scopes: read + send as the user (mirrors the email flow).
 const SLACK_USER_SCOPES = 'channels:history,channels:read,groups:history,groups:read,im:history,im:read,mpim:history,mpim:read,chat:write,users:read,users.profile:read,search:read';
-const AUTH_SCOPES = ['openid', 'email', 'profile', ...GMAIL_SCOPES];
+const AUTH_SCOPES = ['openid', 'email', 'profile', DIRECTORY_SCOPE, ...GMAIL_SCOPES];
+
+// Domain-level directory cache — keyed by domain, TTL 10 min. Shared across
+// all users on the same domain since the org directory is the same for everyone.
+const directoryCache = new Map(); // domain → { users, expiresAt }
+const DIRECTORY_CACHE_TTL_MS = 10 * 60 * 1000;
 
 const gmailAccounts = [];
 let defaultGmailAccountEmail = null;
@@ -1890,6 +1896,100 @@ Keep the summary direct and specific — no filler phrases like "This email thre
     const message = error instanceof Error ? error.message : 'Unknown triage error';
     console.error(`[Email Triage] Error: ${message}`);
     return res.status(500).json({ error: `Triage failed: ${message}` });
+  }
+});
+
+// ── Google Workspace directory ──────────────────────────────────────────────
+
+// Deterministic avatar colour from an email string — same colour every time,
+// stable across deploys, no storage needed.
+const AVATAR_PALETTE = ['#6366f1','#10b981','#f59e0b','#ef4444','#8b5cf6','#06b6d4','#f97316','#14b8a6','#ec4899','#84cc16'];
+function avatarColorFromEmail(email) {
+  let h = 0;
+  for (const c of (email || '')) h = ((h << 5) - h + c.charCodeAt(0)) | 0;
+  return AVATAR_PALETTE[Math.abs(h) % AVATAR_PALETTE.length];
+}
+
+// Returns org users from the Google Workspace directory. Uses the logged-in
+// user's OAuth token (directory.readonly scope). Results are cached per domain
+// for 10 min — the same domain always sees the same snapshot.
+// Returns { users: [...], needsReauth: bool } — needsReauth=true when the
+// stored token pre-dates the directory.readonly scope being added (token has
+// no directory permission). The client falls back to hardcoded users silently.
+app.get('/api/directory/users', async (req, res) => {
+  const session = getSessionById(req.query.sessionId);
+  if (!session) return res.status(401).json({ error: 'Unauthorized session' });
+
+  const domain = session.user.domain;
+  if (!domain) return res.json({ users: [], needsReauth: false });
+
+  // Return cached result if still fresh
+  const cached = directoryCache.get(domain);
+  if (cached && cached.expiresAt > Date.now()) {
+    return res.json({ users: cached.users, needsReauth: false });
+  }
+
+  const token = session.tokens;
+  if (!token) return res.json({ users: [], needsReauth: true });
+
+  // Check whether the token actually carries the directory scope. If not, the
+  // People API call would 403 — tell the client to prompt re-auth instead.
+  const grantedScopes = token.scope ? token.scope.split(' ') : [];
+  if (!grantedScopes.includes(DIRECTORY_SCOPE)) {
+    return res.json({ users: [], needsReauth: true });
+  }
+
+  const oauth2Client = getOAuthClient();
+  if (!oauth2Client) return res.json({ users: [], needsReauth: false });
+  oauth2Client.setCredentials(token);
+
+  try {
+    const people = google.people({ version: 'v1', auth: oauth2Client });
+    const allPeople = [];
+    let pageToken;
+    do {
+      const response = await people.people.listDirectoryPeople({
+        readMask: 'names,emailAddresses',
+        sources: ['DIRECTORY_SOURCE_TYPE_DOMAIN_PROFILE'],
+        pageSize: 1000,
+        ...(pageToken ? { pageToken } : {}),
+      });
+      const persons = response.data.people ?? [];
+      allPeople.push(...persons);
+      pageToken = response.data.nextPageToken ?? null;
+    } while (pageToken);
+
+    const users = allPeople
+      .map((p) => {
+        const email = (p.emailAddresses ?? []).find((e) => e.metadata?.primary)?.value
+          ?? p.emailAddresses?.[0]?.value ?? '';
+        if (!email) return null;
+        // Filter to the allowed domain only — never return external contacts
+        const emailDomain = email.split('@')[1]?.toLowerCase();
+        if (!emailDomain || !ALLOWED_DOMAINS.includes(emailDomain)) return null;
+        const name = (p.names ?? []).find((n) => n.metadata?.primary)?.displayName
+          ?? p.names?.[0]?.displayName
+          ?? email.split('@')[0];
+        return {
+          id: p.resourceName ?? `dir-${email}`,
+          email: email.toLowerCase(),
+          name,
+          avatarColor: avatarColorFromEmail(email),
+        };
+      })
+      .filter(Boolean)
+      .sort((a, b) => a.name.localeCompare(b.name));
+
+    directoryCache.set(domain, { users, expiresAt: Date.now() + DIRECTORY_CACHE_TTL_MS });
+    return res.json({ users, needsReauth: false });
+  } catch (error) {
+    const status = error?.response?.status ?? error?.status ?? 0;
+    if (status === 403 || status === 401) {
+      // Token lacks the scope (user logged in before directory.readonly was added)
+      return res.json({ users: [], needsReauth: true });
+    }
+    console.error(`[Directory] People API error: ${error.message}`);
+    return res.json({ users: [], needsReauth: false });
   }
 });
 

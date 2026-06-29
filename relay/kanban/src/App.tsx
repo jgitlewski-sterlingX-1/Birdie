@@ -10,6 +10,7 @@ import { useEmailGroups } from './emailGroupsStore'
 import { pollNewEmails, pollSlackMessages } from './integrationsApi'
 import { runEmailPipeline } from './emailSkill'
 import { triageThread } from './emailTriageApi'
+import { fetchDirectoryUsers } from './directoryApi'
 import { runSlackPipeline } from './slackSkill'
 import { FlagsProvider } from './flags'
 import { Sidebar } from './components/Sidebar'
@@ -20,7 +21,8 @@ import { LoginPage } from './pages/LoginPage'
 import { ProcessManagerPage } from './pages/ProcessManagerPage'
 import { OnboardingPage } from './pages/OnboardingPage'
 import { apiFetch } from './apiClient'
-import type { Card, Priority, AgentFilter, FilterOperator } from './types'
+import type { Card, Priority, AgentFilter, FilterOperator, User } from './types'
+import { USERS } from './users'
 
 function applyOp(text: string, op: FilterOperator, val: string): boolean {
   switch (op) {
@@ -144,6 +146,35 @@ function AuthenticatedShell() {
   useEffect(() => {
     boardRef.current = boardStore.board
   }, [boardStore.board])
+
+  // Google Workspace directory users — fetched once on login, merged with the
+  // hardcoded fallback list. If the token pre-dates the directory.readonly scope
+  // the server returns needsReauth=true; we show a banner so the user knows to
+  // sign out and back in to unlock the full org list.
+  const [directoryUsers, setDirectoryUsers] = useState<User[]>([])
+  const [directoryNeedsReauth, setDirectoryNeedsReauth] = useState(false)
+
+  useEffect(() => {
+    if (!sessionId) return
+    fetchDirectoryUsers(sessionId)
+      .then(({ users, needsReauth }) => {
+        setDirectoryUsers(users)
+        setDirectoryNeedsReauth(needsReauth)
+      })
+      .catch(() => { /* silently fall back to hardcoded USERS */ })
+  }, [sessionId])
+
+  // Merge: directory list wins for name/email; hardcoded USERS fills the gap
+  // when directory is empty or a user isn't in the org directory yet.
+  const mergedUsers = useMemo<User[]>(() => {
+    if (directoryUsers.length === 0) return USERS
+    const byEmail = new Map(directoryUsers.map((u) => [u.email.toLowerCase(), u]))
+    // Keep any hardcoded user whose email doesn't appear in the directory
+    USERS.forEach((u) => {
+      if (!byEmail.has(u.email.toLowerCase())) byEmail.set(u.email.toLowerCase(), u)
+    })
+    return Array.from(byEmail.values())
+  }, [directoryUsers])
 
   // User-visible status of the last email pull.
   const [pollStatus, setPollStatus] = useState<string | null>(null)
@@ -353,6 +384,8 @@ function AuthenticatedShell() {
             approvalsStore={approvalsStore}
             emailGroupsStore={emailGroupsStore}
             currentUser={currentUser}
+            users={mergedUsers}
+            directoryNeedsReauth={directoryNeedsReauth}
             activeCard={activeCard}
             onOpenCard={setActiveCardId}
             onCloseCard={() => setActiveCardId(null)}

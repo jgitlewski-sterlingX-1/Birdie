@@ -14,6 +14,8 @@ interface HomePageProps {
   approvalsStore: ReturnType<typeof useApprovals>
   emailGroupsStore: ReturnType<typeof useEmailGroups>
   currentUser: User
+  users?: User[]
+  directoryNeedsReauth?: boolean
   activeCard: Card | null
   onOpenCard: (id: string) => void
   onCloseCard: () => void
@@ -32,6 +34,8 @@ export function HomePage({
   approvalsStore,
   emailGroupsStore,
   currentUser,
+  users: usersProp,
+  directoryNeedsReauth = false,
   activeCard,
   onOpenCard,
   onCloseCard,
@@ -46,17 +50,26 @@ export function HomePage({
   const { board, addCard, updateCard, deleteCard, addSubtask, delegateCard, moveCard } = boardStore
   const { has } = useFlags()
 
+  const users = usersProp ?? USERS
+
   const projectsById = useMemo(
     () => Object.fromEntries(projects.map((p) => [p.id, p])),
     [projects]
   )
   const usersById = useMemo(
-    () => Object.fromEntries(USERS.map((u) => [u.id, u])),
-    []
+    () => Object.fromEntries(users.map((u) => [u.id, u])),
+    [users]
   )
 
   return (
     <div>
+      {directoryNeedsReauth ? (
+        <div style={{ margin: '0 0 12px', padding: '8px 12px', background: '#fffbeb', border: '1px solid #fde68a', borderRadius: 8, fontSize: 12, color: '#92400e', display: 'flex', alignItems: 'center', gap: 8 }}>
+          <span>⚠</span>
+          <span>Sign out and back in to load your full org directory — your current session pre-dates that permission.</span>
+        </div>
+      ) : null}
+
       <header className="page-header">
         <div>
           <div className="page-title">Board</div>
@@ -108,7 +121,7 @@ export function HomePage({
           key={activeCard.id}
           card={activeCard}
           projects={projects}
-          users={USERS}
+          users={users}
           subtasks={Object.values(board.cards).filter((c) => c.parentId === activeCard.id)}
           onClose={onCloseCard}
           onUpdateCard={updateCard}
