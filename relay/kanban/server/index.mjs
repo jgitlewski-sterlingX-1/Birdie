@@ -1239,6 +1239,43 @@ app.get('/api/email/poll', async (req, res) => {
       const to = getHeaderValue(headers, 'To');
       const cc = getHeaderValue(headers, 'Cc');
       const body = extractTextBody(msg.payload).trim();
+      const msgDate = dateHeader || (msg.internalDate ? new Date(Number(msg.internalDate)).toISOString() : new Date().toISOString());
+
+      // Fetch the full thread so the triage model sees the entire conversation.
+      let emailThread = [{
+        from,
+        date: msgDate,
+        body,
+        ...(to ? { to } : {}),
+        ...(cc ? { cc } : {}),
+      }];
+      try {
+        const threadRes = await gmail.users.threads.get({
+          userId: 'me',
+          id: msg.threadId,
+          format: 'full',
+        });
+        const threadMsgs = threadRes.data.messages ?? [];
+        if (threadMsgs.length > 1) {
+          emailThread = threadMsgs.map((tm) => {
+            const th = tm.payload?.headers ?? [];
+            const tmFrom = getHeaderValue(th, 'From');
+            const tmTo = getHeaderValue(th, 'To');
+            const tmCc = getHeaderValue(th, 'Cc');
+            const tmDate = getHeaderValue(th, 'Date') || (tm.internalDate ? new Date(Number(tm.internalDate)).toISOString() : '');
+            const tmBody = extractTextBody(tm.payload).trim();
+            return {
+              from: tmFrom,
+              date: tmDate,
+              body: tmBody,
+              ...(tmTo ? { to: tmTo } : {}),
+              ...(tmCc ? { cc: tmCc } : {}),
+            };
+          }).filter((tm) => tm.from || tm.body);
+        }
+      } catch (threadErr) {
+        console.error(`[Email Poll] Thread fetch failed for ${msg.threadId}: ${threadErr instanceof Error ? threadErr.message : threadErr}`);
+      }
 
       newEmails.push({
         messageId: msg.id,
@@ -1247,9 +1284,10 @@ app.get('/api/email/poll', async (req, res) => {
         subject,
         snippet: msg.snippet ?? '',
         body,
-        date: dateHeader || (msg.internalDate ? new Date(Number(msg.internalDate)).toISOString() : new Date().toISOString()),
+        date: msgDate,
         ...(to ? { to } : {}),
         ...(cc ? { cc } : {}),
+        emailThread,
       });
 
       seen.add(meta.id);
@@ -1868,18 +1906,41 @@ app.post('/api/email/triage', async (req, res) => {
   }
 
   const threadText = messages
-    .map((m, i) => `[Message ${i + 1}]\nFrom: ${m.from || 'unknown'}\nDate: ${m.date || ''}\n\n${m.body || ''}`)
+    .map((m, i) => {
+      const header = [
+        `[Message ${i + 1}]`,
+        `From: ${m.from || 'unknown'}`,
+        m.to ? `To: ${m.to}` : null,
+        m.cc ? `Cc: ${m.cc}` : null,
+        `Date: ${m.date || ''}`,
+      ].filter(Boolean).join('\n');
+      return `${header}\n\n${m.body || '(no body)'}`;
+    })
     .join('\n\n---\n\n');
 
   const system =
-    `You are an email triage assistant for a law firm. Analyze the full email thread and respond with ONLY valid JSON matching this shape:
+    `You are an email triage assistant for a busy law firm attorney. Analyze the full email thread and respond with ONLY valid JSON matching this exact shape:
 {
-  "summary": "2-4 sentence summary covering: who sent what, the core issue or ask, any important context from the thread, and what action is needed next",
+  "summary": "...",
   "todos": ["action item 1", "action item 2"]
 }
-Keep the summary direct and specific — no filler phrases like "This email thread discusses". The todos should be concrete, specific actions (max 4). Return ONLY the JSON object, no markdown, no explanation.`;
 
-  const userMsg = `Subject: ${subject}\n\nFull email thread (oldest first):\n\n${threadText}`;
+Summary requirements:
+- Write 3-5 sentences — never fewer than 3
+- Cover: who are the parties and their relationship to the firm, what is the core matter or ask, what has been discussed or exchanged so far, the current status, and what specific decision or action is needed now
+- Include any deadlines, dollar amounts, case names, or specific facts that matter
+- Note whether this is an ongoing matter or a new inquiry
+- Write for an attorney who has not read these emails — give them everything they need to act without rereading
+- Never start with "This email thread" or similar filler phrases
+
+Todos:
+- List 2-5 concrete, specific actions the attorney must take
+- Include deadlines in the action item if mentioned
+- Order by urgency
+
+Return ONLY the JSON object. No markdown fences, no extra explanation.`;
+
+  const userMsg = `Subject: ${subject}\n\nFull email thread (${messages.length} message${messages.length === 1 ? '' : 's'}, oldest first):\n\n${threadText}`;
 
   try {
     const claudeRes = await fetch('https://api.anthropic.com/v1/messages', {
@@ -1891,7 +1952,7 @@ Keep the summary direct and specific — no filler phrases like "This email thre
       },
       body: JSON.stringify({
         model: process.env.ANTHROPIC_MODEL || 'claude-haiku-4-5-20251001',
-        max_tokens: 512,
+        max_tokens: 1024,
         system,
         messages: [{ role: 'user', content: userMsg }],
       }),

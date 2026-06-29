@@ -21,7 +21,7 @@ import { LoginPage } from './pages/LoginPage'
 import { ProcessManagerPage } from './pages/ProcessManagerPage'
 import { OnboardingPage } from './pages/OnboardingPage'
 import { apiFetch } from './apiClient'
-import type { Card, Priority, AgentFilter, FilterOperator, User } from './types'
+import type { Card, Priority, AgentFilter, FilterOperator, User, EmailMessage } from './types'
 
 function applyOp(text: string, op: FilterOperator, val: string): boolean {
   switch (op) {
@@ -71,6 +71,7 @@ interface IncomingEmail {
   threadId: string
   to?: string
   cc?: string
+  emailThread?: Array<{ from: string; to?: string; cc?: string; date: string; body: string }>
 }
 
 // Demo email used by the "Simulate incoming email" button so the base skill
@@ -88,6 +89,38 @@ const SAMPLE_EMAIL: IncomingEmail = {
     'Let me know if you have any questions. Thanks, Pat',
   messageId: `demo-${Math.random().toString(36).slice(2, 10)}`,
   threadId: `demo-thread-${Math.random().toString(36).slice(2, 10)}`,
+  emailThread: [
+    {
+      from: 'Pat Counsel <counsel@opposingfirm.com>',
+      to: 'Jay Gitlewski <jay@sterlinglawyers.com>',
+      cc: 'Tom Reyes <treyes@opposingfirm.com>',
+      date: new Date(Date.now() - 3 * 24 * 60 * 60 * 1000).toISOString(),
+      body:
+        'Jay — following up on the Henderson matter. Our client has agreed to the $85,000 settlement figure we discussed. ' +
+        'Can you prepare the formal settlement agreement and send it over by end of week? We would like to close this before the hearing on the 15th.',
+    },
+    {
+      from: 'Jay Gitlewski <jay@sterlinglawyers.com>',
+      to: 'Pat Counsel <counsel@opposingfirm.com>',
+      cc: 'Sarah Miller <smiller@sterlinglawyers.com>',
+      date: new Date(Date.now() - 2 * 24 * 60 * 60 * 1000).toISOString(),
+      body:
+        'Pat — thanks, we can work with that figure. I will have Sarah prepare the draft agreement. ' +
+        'One item to resolve: the custody schedule for the holiday period was not addressed in our last term sheet. ' +
+        'Can your client confirm whether they accept the proposed alternating schedule? We need that confirmed before we finalize the agreement.',
+    },
+    {
+      from: 'Pat Counsel <counsel@opposingfirm.com>',
+      to: 'Jay Gitlewski <jay@sterlinglawyers.com>',
+      cc: 'Sarah Miller <smiller@sterlinglawyers.com>, Tom Reyes <treyes@opposingfirm.com>',
+      date: new Date().toISOString(),
+      body:
+        'Hi Jay, Could you please review the attached settlement agreement and confirm the closing date by Friday? ' +
+        'My client has confirmed the alternating holiday schedule — they accept the proposed terms. ' +
+        'Also, can you send the signed disclosure form to opposing counsel before end of week? ' +
+        'We are aiming to file the stipulation no later than the 12th. Let me know if you have any questions. Thanks, Pat',
+    },
+  ],
 }
 
 interface IncomingSlackMessage {
@@ -203,15 +236,18 @@ function AuthenticatedShell() {
   // Claude-generated thread summary + action items.
   const ingestEmailCard = useCallback(
     (email: IncomingEmail, priorityOverride?: Priority) => {
-      const emailThread = [
-        {
-          from: email.from,
-          date: email.date,
-          body: email.body || email.snippet,
-          ...(email.to ? { to: email.to } : {}),
-          ...(email.cc ? { cc: email.cc } : {}),
-        },
-      ]
+      const emailThread: EmailMessage[] =
+        email.emailThread && email.emailThread.length > 0
+          ? email.emailThread
+          : [
+              {
+                from: email.from,
+                date: email.date,
+                body: email.body || email.snippet,
+                ...(email.to ? { to: email.to } : {}),
+                ...(email.cc ? { cc: email.cc } : {}),
+              },
+            ]
       const cardId = addCard('col-new', {
         title: email.subject,
         description: email.snippet || 'New Gmail message',

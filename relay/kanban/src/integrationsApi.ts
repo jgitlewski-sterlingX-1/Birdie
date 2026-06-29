@@ -69,6 +69,9 @@ export interface PolledEmail {
   snippet: string;
   body: string;
   date: string;
+  to?: string;
+  cc?: string;
+  emailThread?: Array<{ from: string; to?: string; cc?: string; date: string; body: string }>;
 }
 
 export async function getIntegrationsStatus(sessionId?: string): Promise<IntegrationsResponse> {
