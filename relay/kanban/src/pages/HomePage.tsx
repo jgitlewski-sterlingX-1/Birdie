@@ -43,7 +43,7 @@ export function HomePage({
   sessionId,
   voiceInstructions,
 }: HomePageProps) {
-  const { board, addCard, updateCard, deleteCard, addSubtask, delegateCard } = boardStore
+  const { board, addCard, updateCard, deleteCard, addSubtask, delegateCard, moveCard } = boardStore
   const { has } = useFlags()
 
   const projectsById = useMemo(
@@ -114,6 +114,7 @@ export function HomePage({
           onUpdateCard={updateCard}
           onAddSubtask={addSubtask}
           onDelegate={delegateCard}
+          onMoveCard={moveCard}
           onCreateProject={onCreateProject}
           sessionId={sessionId}
           voiceInstructions={voiceInstructions}

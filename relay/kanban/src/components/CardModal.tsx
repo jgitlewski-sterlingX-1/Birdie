@@ -64,6 +64,7 @@ interface CardModalProps {
   onUpdateCard: (cardId: string, patch: Partial<Card>) => void
   onAddSubtask: (parentId: string, title: string) => void
   onDelegate: (cardId: string, assigneeId: string, actionItems: string[]) => void
+  onMoveCard: (cardId: string, toColId: string, toIndex: number) => void
   onCreateProject: (name: string, description?: string) => string
   sessionId: string
   voiceInstructions: string
@@ -81,6 +82,7 @@ export function CardModal({
   onUpdateCard,
   onAddSubtask,
   onDelegate,
+  onMoveCard,
   onCreateProject,
   sessionId,
   voiceInstructions,
@@ -105,8 +107,18 @@ export function CardModal({
   const [newGroupName, setNewGroupName] = useState('')
   const [newGroupColor, setNewGroupColor] = useState(GROUP_COLORS[0])
   // Email action selection (gmail cards only)
-  type EmailAction = 'delegate' | 'draft' | 'ignore' | null
+  type EmailAction = 'delegate' | 'draft' | 'ignore' | 'todo' | null
   const [emailAction, setEmailAction] = useState<EmailAction>(null)
+  // Move to To-Do assignment state
+  const [todoAssigneeId, setTodoAssigneeId] = useState(card.assigneeId ?? '')
+  const [todoCardDueDate, setTodoCardDueDate] = useState(card.dueDate ?? '')
+  // Per-subtask due dates + assignees keyed by subtask id
+  const [subtaskAssignees, setSubtaskAssignees] = useState<Record<string, string>>(
+    () => Object.fromEntries(subtasks.map((s) => [s.id, s.assigneeId ?? '']))
+  )
+  const [subtaskDueDates, setSubtaskDueDates] = useState<Record<string, string>>(
+    () => Object.fromEntries(subtasks.map((s) => [s.id, s.dueDate ?? '']))
+  )
   // Ignore rule builder state
   const [ruleField, setRuleField] = useState<RuleConditionField>('from')
   const [ruleOperator, setRuleOperator] = useState<'contains' | 'equals'>('contains')
@@ -265,6 +277,14 @@ export function CardModal({
                 >
                   Ignore
                 </button>
+                <button
+                  type="button"
+                  className={`btn ${emailAction === 'todo' ? 'btn-primary' : 'btn-ghost'}`}
+                  style={emailAction === 'todo' ? {} : { color: '#0369a1' }}
+                  onClick={() => setEmailAction(emailAction === 'todo' ? null : 'todo')}
+                >
+                  → To-Do
+                </button>
               </div>
 
               {emailAction === 'ignore' ? (
@@ -366,6 +386,115 @@ export function CardModal({
                   ) : null}
                 </div>
               ) : null}
+
+              {emailAction === 'todo' ? (() => {
+                const allAssigned =
+                  !!todoAssigneeId &&
+                  !!todoCardDueDate &&
+                  subtasks.every((s) => !!subtaskAssignees[s.id] && !!subtaskDueDates[s.id])
+
+                const applyToAll = (assigneeId: string, dueDate: string) => {
+                  if (assigneeId) setSubtaskAssignees(Object.fromEntries(subtasks.map((s) => [s.id, assigneeId])))
+                  if (dueDate) setSubtaskDueDates(Object.fromEntries(subtasks.map((s) => [s.id, dueDate])))
+                }
+
+                return (
+                  <div
+                    className="panel"
+                    style={{ padding: 14, display: 'grid', gap: 12, background: '#f0f9ff', borderColor: '#7dd3fc' }}
+                  >
+                    <div style={{ fontSize: 13, fontWeight: 600, color: '#0c4a6e' }}>
+                      Assign &amp; schedule before moving to To-Do
+                    </div>
+
+                    {/* Card-level row */}
+                    <div style={{ display: 'grid', gap: 4 }}>
+                      <span style={{ fontSize: 11, fontWeight: 600, color: '#334155', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+                        This card
+                      </span>
+                      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                        <select
+                          value={todoAssigneeId}
+                          onChange={(e) => {
+                            setTodoAssigneeId(e.target.value)
+                            applyToAll(e.target.value, '')
+                          }}
+                          style={{ border: '1px solid #7dd3fc', borderRadius: 6, padding: '5px 8px', fontSize: 12, flex: 1, minWidth: 140 }}
+                        >
+                          <option value="">Assign to…</option>
+                          {users.map((u) => (
+                            <option key={u.id} value={u.id}>{u.name}</option>
+                          ))}
+                        </select>
+                        <input
+                          type="date"
+                          value={todoCardDueDate}
+                          onChange={(e) => {
+                            setTodoCardDueDate(e.target.value)
+                            applyToAll('', e.target.value)
+                          }}
+                          style={{ border: '1px solid #7dd3fc', borderRadius: 6, padding: '5px 8px', fontSize: 12 }}
+                        />
+                      </div>
+                      <span style={{ fontSize: 11, color: '#64748b' }}>
+                        Changing assignee or date here fills all subtasks — edit individually below if needed.
+                      </span>
+                    </div>
+
+                    {/* Per-subtask rows */}
+                    {subtasks.length > 0 ? (
+                      <div style={{ display: 'grid', gap: 8 }}>
+                        <span style={{ fontSize: 11, fontWeight: 600, color: '#334155', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+                          Subtasks
+                        </span>
+                        {subtasks.map((s) => (
+                          <div key={s.id} style={{ display: 'grid', gap: 4 }}>
+                            <span style={{ fontSize: 12, color: '#1e293b' }}>{s.title}</span>
+                            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                              <select
+                                value={subtaskAssignees[s.id] ?? ''}
+                                onChange={(e) => setSubtaskAssignees((prev) => ({ ...prev, [s.id]: e.target.value }))}
+                                style={{ border: '1px solid #bfdbfe', borderRadius: 6, padding: '4px 6px', fontSize: 12, flex: 1, minWidth: 120 }}
+                              >
+                                <option value="">Assign to…</option>
+                                {users.map((u) => (
+                                  <option key={u.id} value={u.id}>{u.name}</option>
+                                ))}
+                              </select>
+                              <input
+                                type="date"
+                                value={subtaskDueDates[s.id] ?? ''}
+                                onChange={(e) => setSubtaskDueDates((prev) => ({ ...prev, [s.id]: e.target.value }))}
+                                style={{ border: '1px solid #bfdbfe', borderRadius: 6, padding: '4px 6px', fontSize: 12 }}
+                              />
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    ) : null}
+
+                    <button
+                      type="button"
+                      className="btn btn-primary"
+                      disabled={!allAssigned}
+                      style={{ justifySelf: 'start', fontSize: 13, opacity: allAssigned ? 1 : 0.5 }}
+                      onClick={() => {
+                        onUpdateCard(card.id, { assigneeId: todoAssigneeId, dueDate: todoCardDueDate })
+                        subtasks.forEach((s) => {
+                          onUpdateCard(s.id, {
+                            assigneeId: subtaskAssignees[s.id] || todoAssigneeId,
+                            dueDate: subtaskDueDates[s.id] || todoCardDueDate,
+                          })
+                        })
+                        onMoveCard(card.id, 'col-todo', 0)
+                        onClose()
+                      }}
+                    >
+                      Move to To-Do
+                    </button>
+                  </div>
+                )
+              })() : null}
             </section>
           ) : null}
 
