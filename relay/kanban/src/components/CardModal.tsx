@@ -128,6 +128,18 @@ export function CardModal({
 
   const participants = useMemo(() => (card.source === 'gmail' ? extractParticipants(card) : []), [card])
 
+  const threadLinks = useMemo(() => {
+    if (!card.emailThread || card.emailThread.length === 0) return []
+    const seen = new Set<string>()
+    const urlRe = /https?:\/\/[^\s<>"{}|\\^`[\]]+/g
+    for (const msg of card.emailThread) {
+      for (const raw of msg.body.match(urlRe) ?? []) {
+        seen.add(raw.replace(/[.,;:!?)'">]+$/, ''))
+      }
+    }
+    return Array.from(seen)
+  }, [card.emailThread])
+
   const { has } = useFlags()
 
   const project = useMemo(() => projects.find((p) => p.id === card.projectId), [projects, card.projectId])
@@ -307,6 +319,34 @@ export function CardModal({
               />
             </label>
           )}
+
+          {threadLinks.length > 0 ? (
+            <section className="panel" style={{ padding: 10, display: 'grid', gap: 6 }}>
+              <h3>Links in thread</h3>
+              <div style={{ display: 'grid', gap: 4 }}>
+                {threadLinks.map((url, i) => (
+                  <a
+                    key={i}
+                    href={url}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    title={url}
+                    style={{
+                      fontSize: 12,
+                      color: '#0369a1',
+                      textDecoration: 'none',
+                      overflow: 'hidden',
+                      textOverflow: 'ellipsis',
+                      whiteSpace: 'nowrap',
+                      display: 'block',
+                    }}
+                  >
+                    {url}
+                  </a>
+                ))}
+              </div>
+            </section>
+          ) : null}
 
           <section className="panel" style={{ padding: 10 }}>
             <h3 style={{ marginBottom: 8 }}>Subtasks</h3>
