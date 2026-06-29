@@ -68,6 +68,8 @@ interface IncomingEmail {
   body: string
   messageId: string
   threadId: string
+  to?: string
+  cc?: string
 }
 
 // Demo email used by the "Simulate incoming email" button so the base skill
@@ -75,7 +77,9 @@ interface IncomingEmail {
 const SAMPLE_EMAIL: IncomingEmail = {
   subject: 'Settlement agreement — review needed before Friday',
   snippet: 'Could you please review the attached settlement agreement…',
-  from: 'counsel@opposingfirm.com',
+  from: 'Pat Counsel <counsel@opposingfirm.com>',
+  to: 'Jay Gitlewski <jay@sterlinglawyers.com>',
+  cc: 'Sarah Miller <smiller@sterlinglawyers.com>, Tom Reyes <treyes@opposingfirm.com>',
   date: new Date().toISOString(),
   body:
     'Hi Jay, Could you please review the attached settlement agreement and confirm the closing date by Friday? ' +
@@ -161,7 +165,13 @@ function AuthenticatedShell() {
   const ingestEmailCard = useCallback(
     (email: IncomingEmail, priorityOverride?: Priority) => {
       const emailThread = [
-        { from: email.from, date: email.date, body: email.body || email.snippet },
+        {
+          from: email.from,
+          date: email.date,
+          body: email.body || email.snippet,
+          ...(email.to ? { to: email.to } : {}),
+          ...(email.cc ? { cc: email.cc } : {}),
+        },
       ]
       const cardId = addCard('col-new', {
         title: email.subject,

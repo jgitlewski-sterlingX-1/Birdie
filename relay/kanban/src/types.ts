@@ -8,6 +8,8 @@ export interface EmailMessage {
   from: string;
   date: string;
   body: string;
+  to?: string;
+  cc?: string;
 }
 
 export interface Attachment {

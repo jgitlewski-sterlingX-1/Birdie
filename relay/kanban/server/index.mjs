@@ -1230,6 +1230,8 @@ app.get('/api/email/poll', async (req, res) => {
       const from = getHeaderValue(headers, 'From');
       const subject = getHeaderValue(headers, 'Subject') || '(No subject)';
       const dateHeader = getHeaderValue(headers, 'Date');
+      const to = getHeaderValue(headers, 'To');
+      const cc = getHeaderValue(headers, 'Cc');
       const body = extractTextBody(msg.payload).trim();
 
       newEmails.push({
@@ -1240,6 +1242,8 @@ app.get('/api/email/poll', async (req, res) => {
         snippet: msg.snippet ?? '',
         body,
         date: dateHeader || (msg.internalDate ? new Date(Number(msg.internalDate)).toISOString() : new Date().toISOString()),
+        ...(to ? { to } : {}),
+        ...(cc ? { cc } : {}),
       });
 
       seen.add(meta.id);

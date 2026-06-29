@@ -16,16 +16,41 @@ function parseEmailHeader(raw: string): { email: string; displayName?: string } 
   return { email: raw.trim().toLowerCase() }
 }
 
-// Collect all unique addresses from a gmail card's thread + replyMeta
+// Split "Name <a@b.com>, Name2 <c@d.com>" correctly (respects angle brackets)
+function splitAddressList(raw: string): string[] {
+  const parts: string[] = []
+  let depth = 0
+  let start = 0
+  for (let i = 0; i < raw.length; i++) {
+    if (raw[i] === '<') depth++
+    else if (raw[i] === '>') depth--
+    else if (raw[i] === ',' && depth === 0) {
+      const part = raw.slice(start, i).trim()
+      if (part) parts.push(part)
+      start = i + 1
+    }
+  }
+  const last = raw.slice(start).trim()
+  if (last) parts.push(last)
+  return parts
+}
+
+// Collect all unique addresses from every field of every message in the thread
 function extractParticipants(card: Card) {
   const seen = new Set<string>()
   const result: Array<{ email: string; displayName?: string }> = []
   const add = (raw: string) => {
     if (!raw) return
-    const p = parseEmailHeader(raw)
-    if (!seen.has(p.email)) { seen.add(p.email); result.push(p) }
+    for (const addr of splitAddressList(raw)) {
+      const p = parseEmailHeader(addr)
+      if (p.email && !seen.has(p.email)) { seen.add(p.email); result.push(p) }
+    }
   }
-  card.emailThread?.forEach((msg) => add(msg.from))
+  card.emailThread?.forEach((msg) => {
+    add(msg.from)
+    if (msg.to) add(msg.to)
+    if (msg.cc) add(msg.cc)
+  })
   if (card.replyMeta?.to) add(card.replyMeta.to)
   return result
 }
