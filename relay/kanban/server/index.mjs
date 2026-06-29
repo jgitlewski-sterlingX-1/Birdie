@@ -1806,6 +1806,89 @@ app.post('/api/email/draft', async (req, res) => {
   }
 });
 
+// ── Email triage ─────────────────────────────────────────────────────────────
+// Base email skill: read the full thread, return a structured summary + action
+// items. Called async after a card is created so the UI shows a placeholder
+// immediately and updates when the result arrives.
+
+app.post('/api/email/triage', async (req, res) => {
+  const sessionId = req.query.sessionId || req.body?.sessionId;
+  const session = getSessionById(sessionId);
+  if (!session) return res.status(401).json({ error: 'Unauthorized session' });
+
+  const conn = await getConnection(session.user.id, 'claude');
+  const apiKey = (conn && conn.secret) || process.env.ANTHROPIC_API_KEY;
+  if (!apiKey) {
+    return res.status(400).json({ error: 'No Claude key. Connect Claude in Settings → Integrations.' });
+  }
+
+  const { messages = [], subject = '' } = req.body ?? {};
+  if (!Array.isArray(messages) || messages.length === 0) {
+    return res.status(400).json({ error: 'No email thread provided.' });
+  }
+
+  const threadText = messages
+    .map((m, i) => `[Message ${i + 1}]\nFrom: ${m.from || 'unknown'}\nDate: ${m.date || ''}\n\n${m.body || ''}`)
+    .join('\n\n---\n\n');
+
+  const system =
+    `You are an email triage assistant for a law firm. Analyze the full email thread and respond with ONLY valid JSON matching this shape:
+{
+  "summary": "2-4 sentence summary covering: who sent what, the core issue or ask, any important context from the thread, and what action is needed next",
+  "todos": ["action item 1", "action item 2"]
+}
+Keep the summary direct and specific — no filler phrases like "This email thread discusses". The todos should be concrete, specific actions (max 4). Return ONLY the JSON object, no markdown, no explanation.`;
+
+  const userMsg = `Subject: ${subject}\n\nFull email thread (oldest first):\n\n${threadText}`;
+
+  try {
+    const claudeRes = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-api-key': apiKey,
+        'anthropic-version': '2023-06-01',
+      },
+      body: JSON.stringify({
+        model: process.env.ANTHROPIC_MODEL || 'claude-haiku-4-5-20251001',
+        max_tokens: 512,
+        system,
+        messages: [{ role: 'user', content: userMsg }],
+      }),
+    });
+
+    if (!claudeRes.ok) {
+      const text = await claudeRes.text();
+      console.error(`[Email Triage] Claude error ${claudeRes.status}: ${text.slice(0, 300)}`);
+      return res.status(502).json({ error: `Claude error: ${claudeRes.status}` });
+    }
+
+    const data = await claudeRes.json();
+    const raw = (data.content ?? [])
+      .filter((b) => b.type === 'text')
+      .map((b) => b.text)
+      .join('')
+      .trim();
+
+    let parsed;
+    try {
+      parsed = JSON.parse(raw);
+    } catch {
+      // Model returned prose — wrap it
+      parsed = { summary: raw, todos: [] };
+    }
+
+    return res.json({
+      summary: parsed.summary ?? '',
+      todoTitles: Array.isArray(parsed.todos) ? parsed.todos : [],
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Unknown triage error';
+    console.error(`[Email Triage] Error: ${message}`);
+    return res.status(500).json({ error: `Triage failed: ${message}` });
+  }
+});
+
 // ── Feature flag endpoints ──────────────────────────────────────────────────
 
 // Flags evaluated for the calling user (drives client gating).

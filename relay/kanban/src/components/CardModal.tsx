@@ -199,7 +199,11 @@ export function CardModal({
                   Delegated → {assignee.name}
                 </span>
               ) : null}
-              {card.summary ? (
+              {card.summary === 'Analyzing thread…' ? (
+                <p style={{ color: '#94a3b8', marginTop: 6, fontSize: 13, fontStyle: 'italic' }}>
+                  Analyzing thread…
+                </p>
+              ) : card.summary ? (
                 <p style={{ color: '#475569', marginTop: 6, whiteSpace: 'pre-wrap' }}>{card.summary}</p>
               ) : null}
             </div>

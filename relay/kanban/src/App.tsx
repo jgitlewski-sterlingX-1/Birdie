@@ -9,6 +9,7 @@ import { useAgents } from './agentsStore'
 import { useEmailGroups } from './emailGroupsStore'
 import { pollNewEmails, pollSlackMessages } from './integrationsApi'
 import { runEmailPipeline } from './emailSkill'
+import { triageThread } from './emailTriageApi'
 import { runSlackPipeline } from './slackSkill'
 import { FlagsProvider } from './flags'
 import { Sidebar } from './components/Sidebar'
@@ -128,6 +129,12 @@ function AuthenticatedShell() {
     rulesRef.current = rules
   }, [rules])
 
+  // sessionId ref so async triage callbacks always have the current value.
+  const sessionIdRef = useRef(sessionId)
+  useEffect(() => {
+    sessionIdRef.current = sessionId
+  }, [sessionId])
+
   // Latest board, read in the poller without re-subscribing it (for dedup).
   const boardRef = useRef(boardStore.board)
   useEffect(() => {
@@ -148,8 +155,9 @@ function AuthenticatedShell() {
     [activeCardId, boardStore.board.cards]
   )
 
-  // Turn an incoming email into a card, then run the email skill pipeline:
-  // base triage first (summary + to-dos), then any enabled custom email skills.
+  // Turn an incoming email into a card, run the base skill pipeline, then fire
+  // an async AI triage call that replaces the placeholder summary with a real
+  // Claude-generated thread summary + action items.
   const ingestEmailCard = useCallback(
     (email: IncomingEmail, priorityOverride?: Priority) => {
       const emailThread = [
@@ -174,7 +182,7 @@ function AuthenticatedShell() {
       const emailSkills = skillsRef.current.filter(
         (s) => s.category === 'email' && s.enabled
       )
-      const { summary, todoTitles, skillsApplied, ignored } = runEmailPipeline(
+      const { skillsApplied, ignored } = runEmailPipeline(
         emailThread,
         emailSkills,
         rulesRef.current
@@ -183,8 +191,30 @@ function AuthenticatedShell() {
         updateCard(cardId, { completed: true, skillsApplied })
         return cardId
       }
-      updateCard(cardId, { summary, todosExtracted: true, skillsApplied })
-      todoTitles.forEach((title) => addSubtask(cardId, title))
+
+      // Show a placeholder immediately, then replace with the real AI summary.
+      updateCard(cardId, { summary: 'Analyzing thread…', skillsApplied })
+
+      const sid = sessionIdRef.current
+      if (sid) {
+        triageThread(sid, { messages: emailThread, subject: email.subject })
+          .then(({ summary, todoTitles }) => {
+            updateCard(cardId, { summary, todosExtracted: true })
+            todoTitles.forEach((title) => addSubtask(cardId, title))
+          })
+          .catch(() => {
+            // Fall back to heuristic summary + todos on API failure
+            const { summary, todoTitles } = runEmailPipeline(emailThread, emailSkills, rulesRef.current)
+            updateCard(cardId, { summary, todosExtracted: true })
+            todoTitles.forEach((title) => addSubtask(cardId, title))
+          })
+      } else {
+        // No session (e.g. demo mode) — use heuristic immediately
+        const { summary, todoTitles } = runEmailPipeline(emailThread, emailSkills, rulesRef.current)
+        updateCard(cardId, { summary, todosExtracted: true })
+        todoTitles.forEach((title) => addSubtask(cardId, title))
+      }
+
       return cardId
     },
     [addCard, updateCard, addSubtask]
