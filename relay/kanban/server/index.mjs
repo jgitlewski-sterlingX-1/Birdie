@@ -1473,43 +1473,71 @@ app.get('/api/slack/poll', async (req, res) => {
     const handle = slackAccount.handle;
     if (!handle) return res.json({ messages: [] });
 
+    const nameCache = new Map();
+    const out = [];
+
+    const resolveName = async (userId) => {
+      if (!nameCache.has(userId)) {
+        const ui = await slackApi('users.info', token, { user: userId });
+        nameCache.set(userId, ui.ok ? ui.user?.real_name || ui.user?.name || userId : userId);
+      }
+      return nameCache.get(userId);
+    };
+
+    // ── Channel mentions ──────────────────────────────────────────────────────
     const search = await slackApi('search.messages', token, {
       query: handle,
       sort: 'timestamp',
       count: 20,
     });
     if (!search.ok) {
-      console.error(`[Slack poll] ${search.error}`);
-      return res.status(502).json({ error: `Slack: ${search.error}` });
-    }
-
-    const matches = search.messages?.matches ?? [];
-    const nameCache = new Map();
-    const out = [];
-    for (const m of matches) {
-      const key = `${m.channel?.id ?? '?'}:${m.ts}`;
-      if (seenSlackKeys.has(key)) continue;
-      seenSlackKeys.add(key);
-
-      let from = m.username || m.user || 'unknown';
-      if (m.user) {
-        if (!nameCache.has(m.user)) {
-          const ui = await slackApi('users.info', token, { user: m.user });
-          nameCache.set(m.user, ui.ok ? ui.user?.real_name || ui.user?.name || m.user : m.user);
-        }
-        from = nameCache.get(m.user);
+      console.error(`[Slack poll] search error: ${search.error}`);
+    } else {
+      for (const m of search.messages?.matches ?? []) {
+        const key = `${m.channel?.id ?? '?'}:${m.ts}`;
+        if (seenSlackKeys.has(key)) continue;
+        seenSlackKeys.add(key);
+        const from = m.user ? await resolveName(m.user) : (m.username || 'unknown');
+        out.push({
+          messageId: key,
+          channelId: m.channel?.id ?? null,
+          channelName: m.channel?.name ?? null,
+          from,
+          text: m.text || '',
+          ts: m.ts,
+          permalink: m.permalink ?? null,
+        });
       }
-
-      out.push({
-        messageId: key,
-        channelId: m.channel?.id ?? null,
-        channelName: m.channel?.name ?? null,
-        from,
-        text: m.text || '',
-        ts: m.ts,
-        permalink: m.permalink ?? null,
-      });
     }
+
+    // ── Direct messages ───────────────────────────────────────────────────────
+    const imList = await slackApi('conversations.list', token, { types: 'im', limit: 30, exclude_archived: true });
+    if (imList.ok) {
+      for (const channel of imList.channels ?? []) {
+        const history = await slackApi('conversations.history', token, { channel: channel.id, limit: 15 });
+        if (!history.ok) continue;
+        for (const m of history.messages ?? []) {
+          if (m.user === slackAccount.userId) continue; // skip own messages
+          if (m.subtype) continue;                       // skip join/leave/etc.
+          const key = `${channel.id}:${m.ts}`;
+          if (seenSlackKeys.has(key)) continue;
+          seenSlackKeys.add(key);
+          const from = m.user ? await resolveName(m.user) : 'unknown';
+          out.push({
+            messageId: key,
+            channelId: channel.id,
+            channelName: 'Direct Message',
+            from,
+            text: m.text || '',
+            ts: m.ts,
+            permalink: null,
+          });
+        }
+      }
+    } else {
+      console.error(`[Slack poll] im list error: ${imList.error}`);
+    }
+
     return res.json({ messages: out });
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Unknown Slack poll error';

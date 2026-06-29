@@ -128,6 +128,7 @@ interface IncomingSlackMessage {
   from: string
   text: string
   permalink?: string | null
+  channelName?: string | null
 }
 
 // Demo Slack message for the "Simulate Slack message" button (testable without
@@ -396,7 +397,8 @@ function AuthenticatedShell() {
   // Turn a Slack message into a card, then run the Slack triage pipeline.
   const ingestSlackCard = useCallback(
     (msg: IncomingSlackMessage) => {
-      const title = msg.text.trim().slice(0, 60) || `Slack from ${msg.from}`
+      const isDm = msg.channelName === 'Direct Message'
+      const title = msg.text.trim().slice(0, 60) || (isDm ? `DM from ${msg.from}` : `Slack from ${msg.from}`)
       const cardId = addCard('col-new', {
         title,
         description: msg.text,
