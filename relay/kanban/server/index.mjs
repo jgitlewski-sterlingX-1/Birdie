@@ -1926,16 +1926,17 @@ app.post('/api/email/triage', async (req, res) => {
 }
 
 Summary requirements:
-- Write 3-5 sentences — never fewer than 3
-- Cover: who are the parties and their relationship to the firm, what is the core matter or ask, what has been discussed or exchanged so far, the current status, and what specific decision or action is needed now
-- Include any deadlines, dollar amounts, case names, or specific facts that matter
-- Note whether this is an ongoing matter or a new inquiry
-- Write for an attorney who has not read these emails — give them everything they need to act without rereading
+- Be comprehensive — cover everything that matters in the thread, using as much space as needed
+- Identify all parties, their roles, and their relationship to the firm
+- Describe what was asked or raised in each message, what was agreed or disputed, any blockers or open questions, and the current status
+- Include every deadline, dollar amount, case name, document reference, or specific fact mentioned
+- Note whether this is a new inquiry or part of an ongoing matter
+- Write for an attorney who has not read any of these emails — leave nothing important out
 - Never start with "This email thread" or similar filler phrases
 
 Todos:
-- List 2-5 concrete, specific actions the attorney must take
-- Include deadlines in the action item if mentioned
+- List every concrete action the attorney must take — do not omit any
+- Include deadlines in the action item text if mentioned
 - Order by urgency
 
 Return ONLY the JSON object. No markdown fences, no extra explanation.`;
@@ -1952,7 +1953,7 @@ Return ONLY the JSON object. No markdown fences, no extra explanation.`;
       },
       body: JSON.stringify({
         model: process.env.ANTHROPIC_MODEL || 'claude-haiku-4-5-20251001',
-        max_tokens: 1024,
+        max_tokens: 8192,
         system,
         messages: [{ role: 'user', content: userMsg }],
       }),
