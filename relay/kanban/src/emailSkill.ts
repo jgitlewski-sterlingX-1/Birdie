@@ -1,6 +1,7 @@
 // src/emailSkill.ts — prototype email skill (heuristic stand-in; replaced by Claude in production)
 
-import type { Card, Skill } from './types';
+import type { Card, Skill, EmailRule } from './types';
+import { checkEmailRules } from './emailGroupsStore';
 
 /**
  * Summarise an email thread. In production, this is a Claude call on the server.
@@ -60,8 +61,17 @@ export function runEmailSkill(card: Card): {
  */
 export function runEmailPipeline(
   messages: { from: string; date?: string; body: string }[],
-  customSkills: Skill[]
-): { summary: string; todoTitles: string[]; skillsApplied: string[] } {
+  customSkills: Skill[],
+  rules: EmailRule[] = []
+): { summary: string; todoTitles: string[]; skillsApplied: string[]; ignored: boolean } {
+  // Check ignore rules before any AI work — cheapest gate.
+  const latest = messages[messages.length - 1] ?? { from: '', body: '' };
+  const subject = latest.body.slice(0, 80);
+  const matchedRule = checkEmailRules({ from: latest.from, subject }, rules);
+  if (matchedRule) {
+    return { summary: '', todoTitles: [], skillsApplied: ['ignore-rule'], ignored: true };
+  }
+
   const todoTitles = extractTodos(messages);
   let summary = summarizeThread(messages);
   const skillsApplied = ['base-email-triage'];
@@ -71,5 +81,5 @@ export function runEmailPipeline(
     summary += `\n\n[custom skill · ${skill.name}] applied after base triage.`;
   }
 
-  return { summary, todoTitles, skillsApplied };
+  return { summary, todoTitles, skillsApplied, ignored: false };
 }

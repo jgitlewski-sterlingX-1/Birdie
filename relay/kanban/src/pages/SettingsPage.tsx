@@ -29,6 +29,8 @@ import {
   listClaudeSkills,
   type ClaudeSkill,
 } from '../skillsApi'
+import { getMySkillStatus, setSkillOverride } from '../skillProfilesApi'
+import type { UserSkillStatus } from '../types'
 
 type Tab = 'agents' | 'skills' | 'approvals' | 'integrations' | 'admin'
 
@@ -57,6 +59,8 @@ export function SettingsPage({ skillsStore, approvalsStore, agentsStore, board }
   const [skillsConnected, setSkillsConnected] = useState(true)
   const [skillError, setSkillError] = useState<string | null>(null)
   const [savingSkill, setSavingSkill] = useState(false)
+  const [mySkillStatus, setMySkillStatus] = useState<UserSkillStatus | null>(null)
+  const [togglingSkill, setTogglingSkill] = useState<string | null>(null)
 
   const { sessionId } = useSession()
   const { has, isAdmin } = useFlags()
@@ -95,11 +99,44 @@ export function SettingsPage({ skillsStore, approvalsStore, agentsStore, board }
     }
   }
 
+  const loadMySkillStatus = async () => {
+    try {
+      const status = await getMySkillStatus(sessionId ?? '')
+      setMySkillStatus(status)
+    } catch {
+      // non-fatal — skill status section will show loading state
+    }
+  }
+
   useEffect(() => {
     const t = window.setTimeout(() => void loadClaudeSkills(), 0)
     return () => window.clearTimeout(t)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
+
+  useEffect(() => {
+    const t = window.setTimeout(() => void loadMySkillStatus(), 0)
+    return () => window.clearTimeout(t)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  const toggleBaseSkill = async (skillId: string, currentEnabled: boolean) => {
+    if (togglingSkill) return
+    setTogglingSkill(skillId)
+    const next = !currentEnabled
+    setMySkillStatus((s) =>
+      s ? { ...s, overrides: { ...s.overrides, [skillId]: next } } : s,
+    )
+    try {
+      await setSkillOverride(sessionId ?? '', skillId, next)
+    } catch {
+      setMySkillStatus((s) =>
+        s ? { ...s, overrides: { ...s.overrides, [skillId]: currentEnabled } } : s,
+      )
+    } finally {
+      setTogglingSkill(null)
+    }
+  }
 
   const connectClaudeKey = async () => {
     if (!claudeKey.trim()) return
@@ -309,6 +346,75 @@ export function SettingsPage({ skillsStore, approvalsStore, agentsStore, board }
       ) : tab === 'skills' ? (
         <div style={{ display: 'grid', gap: 12 }}>
           {skillError ? <div style={{ color: '#b91c1c', fontSize: 13 }}>{skillError}</div> : null}
+
+          {/* My Skill Profile */}
+          <section className="panel" style={{ padding: 12 }}>
+            <h3 style={{ marginBottom: 4 }}>My skill profile</h3>
+            <p style={{ color: '#64748b', fontSize: 12, marginBottom: 8 }}>
+              Your assigned profile controls which base skills run on incoming work. You can override individual skills below.
+            </p>
+            {mySkillStatus ? (
+              <div style={{ display: 'grid', gap: 10 }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <span style={{ fontSize: 13, color: '#334155' }}>Profile:</span>
+                  {mySkillStatus.profile ? (
+                    <span className="badge" style={{ background: '#eff6ff', color: '#1d4ed8' }}>
+                      {mySkillStatus.profile.name}
+                    </span>
+                  ) : (
+                    <span style={{ fontSize: 13, color: '#94a3b8' }}>None assigned — all base skills active</span>
+                  )}
+                </div>
+                {mySkillStatus.profile?.description ? (
+                  <div style={{ fontSize: 12, color: '#64748b' }}>{mySkillStatus.profile.description}</div>
+                ) : null}
+                <div style={{ display: 'grid', gap: 6 }}>
+                  <div style={{ fontSize: 12, color: '#64748b', fontWeight: 500 }}>Base skill overrides:</div>
+                  {skillsStore.baseSkills.map((skill) => {
+                    const overrideVal = mySkillStatus.overrides[skill.id]
+                    const isEnabled = overrideVal !== undefined ? overrideVal : true
+                    const inProfile = mySkillStatus.profile
+                      ? mySkillStatus.profile.stages.some((st) => st.skillIds.includes(skill.id))
+                      : true
+                    return (
+                      <div
+                        key={skill.id}
+                        style={{
+                          display: 'flex',
+                          justifyContent: 'space-between',
+                          alignItems: 'center',
+                          border: '1px solid #e2e8f0',
+                          borderRadius: 8,
+                          padding: '8px 10px',
+                          background: isEnabled ? '#fff' : '#f8fafc',
+                          opacity: isEnabled ? 1 : 0.7,
+                        }}
+                      >
+                        <div>
+                          <div style={{ fontSize: 13, fontWeight: 500 }}>{skill.name}</div>
+                          <div style={{ fontSize: 11, color: '#94a3b8' }}>
+                            {skill.category}
+                            {mySkillStatus.profile && !inProfile ? ' · not in your profile' : ''}
+                          </div>
+                        </div>
+                        <label style={{ display: 'flex', gap: 6, alignItems: 'center', fontSize: 13, cursor: 'pointer' }}>
+                          <input
+                            type="checkbox"
+                            checked={isEnabled}
+                            disabled={togglingSkill === skill.id}
+                            onChange={() => void toggleBaseSkill(skill.id, isEnabled)}
+                          />
+                          {isEnabled ? 'On' : 'Off'}
+                        </label>
+                      </div>
+                    )
+                  })}
+                </div>
+              </div>
+            ) : (
+              <div style={{ color: '#94a3b8', fontSize: 13 }}>Loading…</div>
+            )}
+          </section>
 
           <section className="panel" style={{ padding: 12 }}>
             <h3 style={{ marginBottom: 4 }}>Build a custom Claude skill</h3>

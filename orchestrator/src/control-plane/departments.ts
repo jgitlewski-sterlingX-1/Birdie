@@ -22,8 +22,8 @@ import { fileURLToPath } from 'node:url';
 import { MCP, type HttpMcpServer } from './mcpServers.js';
 
 const __dir = dirname(fileURLToPath(import.meta.url));
-// src/control-plane/ -> ../../departments ; dist/control-plane/ -> ../../departments
-const contractsRoot = resolve(__dir, '../../departments');
+// src/control-plane/ -> ../../../managed-agents ; dist/control-plane/ -> ../../../managed-agents
+const contractsRoot = resolve(__dir, '../../../managed-agents');
 
 function contract(filename: string): string {
   try {
@@ -71,7 +71,7 @@ export const DEPARTMENTS: Record<string, AgentDef> = {
     prompt: core(
       'You are the Communications Manager, responsible for outbound external ' +
         'communication across email and Slack.',
-      'communications.md'
+      'communications-manager.md'
     ),
     tools: [
       'mcp__slack__slack_send_message_draft',
@@ -91,7 +91,7 @@ export const DEPARTMENTS: Record<string, AgentDef> = {
     prompt: core(
       'You are the Operations Manager, responsible for turning intent into ' +
         'tracked, assigned, scheduled work in ClickUp.',
-      'operations.md'
+      'operations-manager.md'
     ),
     tools: [
       'mcp__clickup__clickup_create_task',
@@ -111,7 +111,7 @@ export const DEPARTMENTS: Record<string, AgentDef> = {
     prompt: core(
       'You are the Calendar Manager, responsible for scheduling and defending ' +
         'the user’s calendar.',
-      'calendar.md'
+      'calendar-manager.md'
     ),
     tools: [
       'mcp__gcal__list_events',
@@ -152,7 +152,7 @@ export const DEPARTMENTS: Record<string, AgentDef> = {
     prompt: core(
       'You are the Finance Manager, responsible for pulling, analyzing, and ' +
         'explaining the numbers behind the business.',
-      'finance.md'
+      'finance-manager.md'
     ),
     tools: [
       // Adjust to the exact tools your BigQuery/Drive MCP servers expose.

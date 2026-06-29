@@ -41,7 +41,7 @@ const sessions = new Map();
 const SESSION_TTL_MS = 24 * 60 * 60 * 1000; // sessions stay valid for a full day
 const GMAIL_SCOPES = ['https://www.googleapis.com/auth/gmail.readonly', 'https://www.googleapis.com/auth/gmail.compose'];
 // User-token scopes: read + send as the user (mirrors the email flow).
-const SLACK_USER_SCOPES = 'channels:history,channels:read,groups:history,im:history,chat:write,users:read,search:read';
+const SLACK_USER_SCOPES = 'channels:history,channels:read,groups:history,groups:read,im:history,im:read,mpim:history,mpim:read,chat:write,users:read,users.profile:read,search:read';
 const AUTH_SCOPES = ['openid', 'email', 'profile', ...GMAIL_SCOPES];
 
 const gmailAccounts = [];
@@ -307,6 +307,17 @@ async function requireAdmin(req, res) {
   const roles = await effectiveRoles(session);
   if (!roles.has('admin')) {
     res.status(403).json({ error: 'Admin role required' });
+    return null;
+  }
+  return session;
+}
+
+// Resolve a session (any authenticated user); returns the session or sends 401.
+async function requireSession(req, res) {
+  const sessionId = req.query.sessionId || req.body?.sessionId;
+  const session = getSessionById(sessionId);
+  if (!session) {
+    res.status(401).json({ error: 'Unauthorized session' });
     return null;
   }
   return session;
@@ -1294,6 +1305,17 @@ app.get('/api/integrations/slack/callback', async (req, res) => {
       scopes: (data.authed_user?.scope ?? '').split(',').filter(Boolean),
       connectedAt: new Date().toISOString(),
     };
+    // Persist so the token survives Cloud Run restarts
+    if (dbPool && slackAccount.teamId && slackAccount.userId && slackAccount.accessToken) {
+      try {
+        await dbPool.query(
+          `INSERT INTO slack_tokens (team_id, team_name, user_id, access_token, scopes)
+           VALUES (?, ?, ?, ?, ?)
+           ON DUPLICATE KEY UPDATE team_name=VALUES(team_name), access_token=VALUES(access_token), scopes=VALUES(scopes), connected_at=NOW()`,
+          [slackAccount.teamId, slackAccount.teamName, slackAccount.userId, slackAccount.accessToken, slackAccount.scopes.join(',')]
+        );
+      } catch (e) { console.error(`[Slack OAuth] DB persist failed: ${e.message}`); }
+    }
     console.log(`[Slack OAuth] Connected team "${slackAccount.teamName}" (user ${slackAccount.userId})`);
     return res.redirect(`${FRONTEND_URL}?slack=connected`);
   } catch (error) {
@@ -1303,8 +1325,11 @@ app.get('/api/integrations/slack/callback', async (req, res) => {
   }
 });
 
-app.post('/api/integrations/slack/disconnect', (_req, res) => {
+app.post('/api/integrations/slack/disconnect', async (_req, res) => {
   slackAccount = null;
+  if (dbPool) {
+    try { await dbPool.query('DELETE FROM slack_tokens'); } catch { /* best effort */ }
+  }
   res.json({ ok: true });
 });
 
@@ -1379,6 +1404,152 @@ app.get('/api/slack/poll', async (req, res) => {
     const message = error instanceof Error ? error.message : 'Unknown Slack poll error';
     console.error(`[Slack poll] Error: ${message}`);
     return res.status(500).json({ error: `Failed to poll Slack: ${message}` });
+  }
+});
+
+// ── Slack token persistence ───────────────────────────────────────────────────
+
+async function ensureSlackTokensSchema(pool) {
+  await pool.query(
+    `CREATE TABLE IF NOT EXISTS slack_tokens (
+      id INT AUTO_INCREMENT PRIMARY KEY,
+      team_id VARCHAR(100) NOT NULL,
+      team_name VARCHAR(255),
+      user_id VARCHAR(100) NOT NULL,
+      access_token TEXT NOT NULL,
+      scopes TEXT,
+      connected_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE KEY unique_team_user (team_id, user_id)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`
+  );
+}
+
+async function loadSlackAccount(pool) {
+  if (!pool) return;
+  try {
+    const [rows] = await pool.query('SELECT * FROM slack_tokens ORDER BY connected_at DESC LIMIT 1');
+    if (rows.length > 0) {
+      const row = rows[0];
+      slackAccount = {
+        teamId: row.team_id,
+        teamName: row.team_name,
+        userId: row.user_id,
+        accessToken: row.access_token,
+        scopes: (row.scopes || '').split(',').filter(Boolean),
+        connectedAt: row.connected_at instanceof Date ? row.connected_at.toISOString() : String(row.connected_at),
+      };
+      console.log(`[Slack] Rehydrated token for team "${slackAccount.teamName}" (user ${slackAccount.userId})`);
+    }
+  } catch (e) {
+    console.error(`[Slack] Token load failed: ${e.message}`);
+  }
+}
+
+// ── Intelligence Agent — Slack contact history endpoints ──────────────────────
+// These power the persona-building search: given a contact name, return their
+// recent Slack messages so the Intelligence Agent can build a communication profile.
+
+// GET /api/slack/channels — list channels the authed user is a member of.
+app.get('/api/slack/channels', async (req, res) => {
+  const session = getSessionById(req.query.sessionId);
+  if (!session) return res.status(401).json({ error: 'Unauthorized session' });
+  if (!slackAccount?.accessToken) return res.json({ channels: [], status: 'disconnected' });
+
+  try {
+    const token = slackAccount.accessToken;
+    const result = await slackApi('conversations.list', token, {
+      types: 'public_channel,private_channel',
+      exclude_archived: 'true',
+      limit: 200,
+    });
+    if (!result.ok) return res.status(502).json({ error: result.error });
+    const channels = (result.channels ?? []).map((c) => ({
+      id: c.id,
+      name: c.name,
+      isPrivate: c.is_private,
+      memberCount: c.num_members,
+    }));
+    res.json({ channels, teamName: slackAccount.teamName });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// GET /api/slack/contact-profile?name=... — search Slack for messages from/about a contact.
+// Used by Intelligence Agent to build a communication persona from Slack history.
+app.get('/api/slack/contact-profile', async (req, res) => {
+  const session = getSessionById(req.query.sessionId);
+  if (!session) return res.status(401).json({ error: 'Unauthorized session' });
+  if (!slackAccount?.accessToken) return res.json({ messages: [], users: [], status: 'disconnected' });
+
+  const contactQuery = req.query.name ? String(req.query.name).trim() : '';
+  if (!contactQuery) return res.status(400).json({ error: 'name query param required' });
+
+  const token = slackAccount.accessToken;
+  try {
+    // 1. Find matching Slack users by real name
+    const usersResult = await slackApi('users.list', token, { limit: 200 });
+    const matchingUsers = (usersResult.ok ? usersResult.members ?? [] : []).filter((u) => {
+      const profile = u.profile ?? {};
+      const realName = (profile.real_name || u.real_name || u.name || '').toLowerCase();
+      return !u.deleted && !u.is_bot && realName.includes(contactQuery.toLowerCase());
+    }).map((u) => ({
+      id: u.id,
+      name: u.profile?.real_name || u.real_name || u.name,
+      email: u.profile?.email ?? null,
+      title: u.profile?.title ?? null,
+      timezone: u.tz ?? null,
+    }));
+
+    // 2. Search messages mentioning or from this contact
+    const searchResult = await slackApi('search.messages', token, {
+      query: contactQuery,
+      sort: 'timestamp',
+      sort_dir: 'desc',
+      count: 30,
+    });
+    const messages = (searchResult.ok ? searchResult.messages?.matches ?? [] : []).map((m) => ({
+      text: m.text || '',
+      from: m.username || m.user || 'unknown',
+      channelName: m.channel?.name ?? null,
+      ts: m.ts,
+      permalink: m.permalink ?? null,
+    }));
+
+    res.json({
+      query: contactQuery,
+      matchingUsers,
+      messages,
+      teamName: slackAccount.teamName,
+    });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// GET /api/slack/channel-history?channelId=...&limit=50 — get recent messages from a channel.
+app.get('/api/slack/channel-history', async (req, res) => {
+  const session = getSessionById(req.query.sessionId);
+  if (!session) return res.status(401).json({ error: 'Unauthorized session' });
+  if (!slackAccount?.accessToken) return res.json({ messages: [], status: 'disconnected' });
+
+  const channelId = req.query.channelId ? String(req.query.channelId) : null;
+  if (!channelId) return res.status(400).json({ error: 'channelId required' });
+  const limit = Math.min(Number(req.query.limit) || 50, 200);
+
+  try {
+    const result = await slackApi('conversations.history', slackAccount.accessToken, { channel: channelId, limit });
+    if (!result.ok) return res.status(502).json({ error: result.error });
+    const messages = (result.messages ?? []).map((m) => ({
+      text: m.text || '',
+      user: m.user || null,
+      ts: m.ts,
+      threadTs: m.thread_ts ?? null,
+      replyCount: m.reply_count ?? 0,
+    }));
+    res.json({ channelId, messages, hasMore: result.has_more ?? false });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
   }
 });
 
@@ -1720,13 +1891,664 @@ app.put('/api/admin/users/:id/lock', async (req, res) => {
   res.json({ ok: true });
 });
 
+// ── Skill pipeline orchestration ─────────────────────────────────────────────
+// Profiles hold an ordered pipeline of stages. Each stage runs a set of base
+// skills (in parallel within the stage) after an optional condition check
+// against prior-stage output. Stages execute sequentially in position order.
+//
+// Base skill IDs mirror src/skills.ts — treated as opaque strings server-side.
+
+const BASE_SKILL_IDS = [
+  'base-email-triage',
+  'base-email-voice',
+  'base-slack-triage',
+  'base-salesforce-triage',
+];
+
+// Build a SkillProfile object from flat stage-join rows (one row per stage).
+function buildProfileFromRows(rows) {
+  if (!rows.length) return null;
+  const first = rows[0];
+  const stageMap = new Map();
+  for (const row of rows) {
+    if (!row.stage_id) continue;
+    if (!stageMap.has(row.stage_id)) {
+      stageMap.set(row.stage_id, {
+        id: row.stage_id,
+        name: row.stage_name,
+        position: row.position,
+        skillIds: row.stage_skill_ids ? row.stage_skill_ids.split(',') : [],
+        condition: row.condition_json ? JSON.parse(row.condition_json) : null,
+      });
+    }
+  }
+  const stages = [...stageMap.values()].sort((a, b) => a.position - b.position);
+  return {
+    id: first.id,
+    name: first.name,
+    description: first.description ?? undefined,
+    stages,
+    createdAt: first.created_at,
+    updatedAt: first.updated_at,
+  };
+}
+
+// Replace all stages for a profile atomically (delete → re-insert).
+async function saveStages(pool, profileId, stages) {
+  await pool.query('DELETE FROM skill_pipeline_stages WHERE profile_id = ?', [profileId]);
+  if (!stages?.length) return;
+  for (let i = 0; i < stages.length; i++) {
+    const { name, skillIds, condition } = stages[i];
+    const stageId = uuidv4();
+    await pool.query(
+      'INSERT INTO skill_pipeline_stages (id, profile_id, name, position, condition_json) VALUES (?, ?, ?, ?, ?)',
+      [stageId, profileId, (name || `Stage ${i + 1}`).trim(), i,
+        condition ? JSON.stringify(condition) : null],
+    );
+    const valid = (skillIds ?? []).filter((sid) => BASE_SKILL_IDS.includes(sid));
+    if (valid.length > 0) {
+      await pool.query(
+        `INSERT INTO skill_pipeline_stage_items (stage_id, skill_id) VALUES ${valid.map(() => '(?,?)').join(',')}`,
+        valid.flatMap((sid) => [stageId, sid]),
+      );
+    }
+  }
+}
+
+// Fetch a single profile (with stages) by id.
+async function fetchProfile(pool, id) {
+  const [rows] = await pool.query(
+    `SELECT sp.id, sp.name, sp.description, sp.created_at, sp.updated_at,
+            sps.id AS stage_id, sps.name AS stage_name, sps.position, sps.condition_json,
+            GROUP_CONCAT(spsi.skill_id ORDER BY spsi.skill_id SEPARATOR ',') AS stage_skill_ids
+     FROM skill_profiles sp
+     LEFT JOIN skill_pipeline_stages sps ON sps.profile_id = sp.id
+     LEFT JOIN skill_pipeline_stage_items spsi ON spsi.stage_id = sps.id
+     WHERE sp.id = ?
+     GROUP BY sp.id, sps.id
+     ORDER BY sps.position`,
+    [id],
+  );
+  return buildProfileFromRows(rows);
+}
+
+// GET /api/skills/me — user's assigned pipeline profile + per-skill overrides.
+app.get('/api/skills/me', async (req, res) => {
+  const session = getSessionFromRequest(req);
+  if (!session) return res.status(401).json({ error: 'Not authenticated' });
+  if (!dbPool) return res.json({ profile: null, overrides: {} });
+
+  const userId = session.user.id;
+  const [[stageRows], [overrideRows]] = await Promise.all([
+    dbPool.query(
+      `SELECT sp.id, sp.name, sp.description, sp.created_at, sp.updated_at,
+              sps.id AS stage_id, sps.name AS stage_name, sps.position, sps.condition_json,
+              GROUP_CONCAT(spsi.skill_id ORDER BY spsi.skill_id SEPARATOR ',') AS stage_skill_ids
+       FROM user_skill_profiles usp
+       JOIN skill_profiles sp ON sp.id = usp.profile_id
+       LEFT JOIN skill_pipeline_stages sps ON sps.profile_id = sp.id
+       LEFT JOIN skill_pipeline_stage_items spsi ON spsi.stage_id = sps.id
+       WHERE usp.user_id = ?
+       GROUP BY sp.id, sps.id
+       ORDER BY sps.position`,
+      [userId],
+    ),
+    dbPool.query(
+      'SELECT skill_id, enabled FROM user_skill_overrides WHERE user_id = ?',
+      [userId],
+    ),
+  ]);
+
+  res.json({
+    profile: buildProfileFromRows(stageRows),
+    overrides: Object.fromEntries(overrideRows.map((r) => [r.skill_id, r.enabled === 1])),
+  });
+});
+
+// PUT /api/skills/me/overrides/:skillId — toggle a base skill on/off for the current user.
+app.put('/api/skills/me/overrides/:skillId', async (req, res) => {
+  const session = getSessionFromRequest(req);
+  if (!session) return res.status(401).json({ error: 'Not authenticated' });
+  if (!dbPool) return res.status(503).json({ error: 'Database not available' });
+
+  const { skillId } = req.params;
+  if (!BASE_SKILL_IDS.includes(skillId)) {
+    return res.status(400).json({ error: 'Unknown skill ID' });
+  }
+  const enabled = req.body?.enabled !== false ? 1 : 0;
+  await dbPool.query(
+    `INSERT INTO user_skill_overrides (user_id, skill_id, enabled) VALUES (?, ?, ?)
+     ON DUPLICATE KEY UPDATE enabled = VALUES(enabled)`,
+    [session.user.id, skillId, enabled],
+  );
+  res.json({ ok: true });
+});
+
+// GET /api/admin/skill-profiles — all profiles with full pipeline stages.
+app.get('/api/admin/skill-profiles', async (req, res) => {
+  const session = await requireAdmin(req, res);
+  if (!session) return;
+  if (!dbPool) return res.json({ profiles: [] });
+
+  const [rows] = await dbPool.query(
+    `SELECT sp.id, sp.name, sp.description, sp.created_at, sp.updated_at,
+            sps.id AS stage_id, sps.name AS stage_name, sps.position, sps.condition_json,
+            GROUP_CONCAT(spsi.skill_id ORDER BY spsi.skill_id SEPARATOR ',') AS stage_skill_ids
+     FROM skill_profiles sp
+     LEFT JOIN skill_pipeline_stages sps ON sps.profile_id = sp.id
+     LEFT JOIN skill_pipeline_stage_items spsi ON spsi.stage_id = sps.id
+     GROUP BY sp.id, sps.id
+     ORDER BY sp.name, sps.position`,
+  );
+
+  // Group flat rows into profiles
+  const profileMap = new Map();
+  for (const row of rows) {
+    if (!profileMap.has(row.id)) {
+      profileMap.set(row.id, {
+        id: row.id, name: row.name,
+        description: row.description ?? undefined,
+        stages: [],
+        createdAt: row.created_at, updatedAt: row.updated_at,
+      });
+    }
+    if (row.stage_id) {
+      profileMap.get(row.id).stages.push({
+        id: row.stage_id, name: row.stage_name,
+        position: row.position,
+        skillIds: row.stage_skill_ids ? row.stage_skill_ids.split(',') : [],
+        condition: row.condition_json ? JSON.parse(row.condition_json) : null,
+      });
+    }
+  }
+  res.json({ profiles: [...profileMap.values()] });
+});
+
+// POST /api/admin/skill-profiles — create a profile with an initial pipeline.
+// Body: { name, description?, stages: [{ name, skillIds, condition }] }
+app.post('/api/admin/skill-profiles', async (req, res) => {
+  const session = await requireAdmin(req, res);
+  if (!session) return;
+  if (!dbPool) return res.status(503).json({ error: 'Database not available' });
+
+  const { name, description, stages } = req.body ?? {};
+  if (!name?.trim()) return res.status(400).json({ error: 'name is required' });
+
+  const id = uuidv4();
+  await dbPool.query(
+    'INSERT INTO skill_profiles (id, name, description, created_by) VALUES (?, ?, ?, ?)',
+    [id, name.trim(), description?.trim() || null, session.user.id],
+  );
+  await saveStages(dbPool, id, stages ?? []);
+
+  const profile = await fetchProfile(dbPool, id);
+  res.status(201).json({ profile });
+});
+
+// PUT /api/admin/skill-profiles/:id — update name, description, and full pipeline.
+// Body: { name, description?, stages: [{ name, skillIds, condition }] }
+app.put('/api/admin/skill-profiles/:id', async (req, res) => {
+  const session = await requireAdmin(req, res);
+  if (!session) return;
+  if (!dbPool) return res.status(503).json({ error: 'Database not available' });
+
+  const { id } = req.params;
+  const { name, description, stages } = req.body ?? {};
+  if (!name?.trim()) return res.status(400).json({ error: 'name is required' });
+
+  await dbPool.query(
+    'UPDATE skill_profiles SET name = ?, description = ? WHERE id = ?',
+    [name.trim(), description?.trim() || null, id],
+  );
+  await saveStages(dbPool, id, stages ?? []);
+
+  const profile = await fetchProfile(dbPool, id);
+  if (!profile) return res.status(404).json({ error: 'Profile not found' });
+  res.json({ profile });
+});
+
+// DELETE /api/admin/skill-profiles/:id — cascades stages + items; NULLs user assignments.
+app.delete('/api/admin/skill-profiles/:id', async (req, res) => {
+  const session = await requireAdmin(req, res);
+  if (!session) return;
+  if (!dbPool) return res.status(503).json({ error: 'Database not available' });
+
+  await dbPool.query('DELETE FROM skill_profiles WHERE id = ?', [req.params.id]);
+  res.json({ ok: true });
+});
+
+// POST /api/admin/users/:userId/skill-profile — assign (or unassign) a profile.
+// Body: { profileId: string | null }
+app.post('/api/admin/users/:userId/skill-profile', async (req, res) => {
+  const session = await requireAdmin(req, res);
+  if (!session) return;
+  if (!dbPool) return res.status(503).json({ error: 'Database not available' });
+
+  const { userId } = req.params;
+  const { profileId } = req.body ?? {};
+
+  if (!profileId) {
+    await dbPool.query('DELETE FROM user_skill_profiles WHERE user_id = ?', [userId]);
+  } else {
+    await dbPool.query(
+      `INSERT INTO user_skill_profiles (user_id, profile_id, assigned_by)
+       VALUES (?, ?, ?)
+       ON DUPLICATE KEY UPDATE profile_id = VALUES(profile_id), assigned_by = VALUES(assigned_by),
+         assigned_at = CURRENT_TIMESTAMP`,
+      [userId, profileId, session.user.id],
+    );
+  }
+  res.json({ ok: true });
+});
+
+// ── Agent registry ────────────────────────────────────────────────────────────
+// Static definition of the managed-agent hierarchy, mirroring managed-agents/*.md
+// and orchestrator/src/control-plane/departments.ts. No auth required — this is
+// structural metadata, not user data.
+const AGENT_REGISTRY = {
+  orchestrator: {
+    id: 'ceo_orchestrator',
+    name: 'CEO Orchestrator',
+    tier: 'orchestrator',
+    model: 'claude-opus-4-8',
+    mandate: 'Master coordinator. Understands user intent, delegates to the right department head(s), synthesizes results. No tools except delegation.',
+    tools: ['Agent (delegation only)'],
+    delegates_to: ['communications_manager', 'operations_manager', 'calendar_manager', 'receptionist', 'finance_manager'],
+    contract_file: 'managed-agents/ceo-orchestrator.md',
+  },
+  departments: [
+    {
+      id: 'communications_manager',
+      name: 'Communications Manager',
+      tier: 'department',
+      model: 'claude-sonnet-4-6',
+      mandate: 'Outbound external communications — email and Slack. Draft freely; send is approval-gated.',
+      tools: ['slack_send_message_draft', 'slack_send_message', 'slack_search_channels', 'gmail_create_draft', 'gmail_list_drafts'],
+      mcp_servers: ['slack', 'gmail'],
+      contract_file: 'managed-agents/communications-manager.md',
+    },
+    {
+      id: 'operations_manager',
+      name: 'Operations Manager',
+      tier: 'department',
+      model: 'claude-sonnet-4-6',
+      mandate: 'Task and work management in ClickUp. Create, update, and report on tasks. Mutations are approval-gated.',
+      tools: ['clickup_create_task', 'clickup_update_task', 'clickup_filter_tasks', 'clickup_get_task', 'clickup_get_workspace_hierarchy'],
+      mcp_servers: ['clickup'],
+      contract_file: 'managed-agents/operations-manager.md',
+    },
+    {
+      id: 'calendar_manager',
+      name: 'Calendar Manager',
+      tier: 'department',
+      model: 'claude-sonnet-4-6',
+      mandate: 'Calendar ownership — scheduling, rescheduling, and protecting time. Create/move/cancel is approval-gated.',
+      tools: ['gcal_list_events', 'gcal_list_calendars', 'gcal_suggest_time', 'gcal_create_event', 'gcal_update_event', 'gcal_delete_event'],
+      mcp_servers: ['gcal'],
+      contract_file: 'managed-agents/calendar-manager.md',
+    },
+    {
+      id: 'receptionist',
+      name: 'Receptionist',
+      tier: 'department',
+      model: 'claude-sonnet-4-6',
+      mandate: 'Inbound email triage — classify, summarize, and label. Read + draft only; never sends.',
+      tools: ['gmail_search_threads', 'gmail_get_thread', 'gmail_list_labels', 'gmail_label_thread', 'gmail_create_draft'],
+      mcp_servers: ['gmail'],
+      contract_file: 'managed-agents/receptionist.md',
+    },
+    {
+      id: 'finance_manager',
+      name: 'Finance Manager',
+      tier: 'department',
+      model: 'claude-sonnet-4-6',
+      mandate: 'Accounting and finance — query data, build summaries, flag anomalies. Read-only; never writes to financial systems.',
+      tools: ['bigquery_query', 'bigquery_list_datasets'],
+      mcp_servers: ['bigquery'],
+      contract_file: 'managed-agents/finance-manager.md',
+    },
+    {
+      id: 'intelligence_agent',
+      name: 'Intelligence Agent',
+      tier: 'department',
+      model: 'claude-sonnet-4-6',
+      mandate: 'Builds contact personas from communication history across email and Slack. Searches past threads and messages, extracts relationship signals and communication style, and delivers a structured profile to support better drafting. Read-only — never sends or mutates. Expands to CRM and Calendar as systems come online.',
+      tools: ['gmail_search_threads', 'gmail_get_thread', 'gmail_list_labels', 'slack_contact_profile', 'slack_channel_history', 'slack_channels_list'],
+      mcp_servers: ['gmail_history', 'slack_history'],
+      contract_file: 'managed-agents/intelligence-agent.md',
+    },
+  ],
+};
+
+app.get('/api/agents', (_req, res) => {
+  res.json(AGENT_REGISTRY);
+});
+
+// ── Skill metadata + user-editable rules ─────────────────────────────────────
+
+const SKILL_META = {
+  slack: {
+    description: 'Reads messages and posts responses across Slack channels and direct messages.',
+    tools: ['slack_send_message', 'slack_list_channels', 'slack_read_messages'],
+    defaultRules: [
+      'Business hours only (Mon–Fri, 8 am–6 pm CT)',
+      'No external workspace channels',
+      'Respond in the same channel or thread as the original message',
+    ],
+  },
+  gmail: {
+    description: 'Reads email threads and creates drafts via Gmail OAuth. Cannot send — drafts only.',
+    tools: ['gmail_draft', 'gmail_read_thread', 'gmail_list_inbox'],
+    defaultRules: [
+      'Drafts only — never send',
+      'Always include a confidentiality footer on outbound drafts',
+      'Deduplicate: skip threads already on the board',
+    ],
+  },
+  gcal: {
+    description: 'Reads, creates, and updates events on Google Calendar on behalf of the user.',
+    tools: ['gcal_list_events', 'gcal_create_event', 'gcal_update_event'],
+    defaultRules: [
+      'Never delete or cancel existing events without explicit confirmation',
+      'Booking windows: Mon–Fri, 9 am–5 pm CT only',
+      'Always include a video-conference link for new meetings',
+    ],
+  },
+  clickup: {
+    description: 'Creates and manages tasks, subtasks, and projects in ClickUp.',
+    tools: ['clickup_create_task', 'clickup_list_tasks', 'clickup_update_task'],
+    defaultRules: [
+      'Set due dates only when explicitly requested',
+      'Tag every task with its source (email or Slack) for audit trail',
+      'Never move tasks between spaces without explicit instruction',
+    ],
+  },
+  bigquery: {
+    description: 'Queries financial and operational data from BigQuery — read-only access.',
+    tools: ['bigquery_query', 'bigquery_list_tables', 'bigquery_get_table'],
+    defaultRules: [
+      'Read-only — no INSERT, UPDATE, or DELETE statements',
+      'Queries are scoped to the current organization only',
+      'Always cite the table and date range in the summary',
+    ],
+  },
+  gmail_history: {
+    description: 'Reads past email threads to extract communication patterns, relationship signals, and contact personas. Strictly read-only — no drafts, no mutations.',
+    tools: ['gmail_search_threads', 'gmail_get_thread', 'gmail_list_labels'],
+    defaultRules: [
+      'Read-only — no drafts, labels, or mutations of any kind',
+      'Summarize content only; never reproduce verbatim privileged text',
+      'Scope every search to the authenticated user\'s mailbox only',
+      'Always cite thread date and subject for every claim in a persona',
+      'Return { history: "none found" } when no past threads exist — never block the pipeline',
+    ],
+  },
+  slack_history: {
+    description: 'Searches Slack message history to build contact personas — communication style, channels, topics, and relationship patterns. Read-only. Powers the Intelligence Agent persona engine.',
+    tools: ['slack_contact_profile', 'slack_channel_history', 'slack_channels_list'],
+    defaultRules: [
+      'Read-only — never posts, reacts, or mutates any Slack state',
+      'Scope searches to the authenticated user\'s workspace only',
+      'Summarize patterns; never reproduce verbatim message content in logs or traces',
+      'Cite channel name and approximate date for every signal in a persona',
+      'If contact is not found in Slack, return gracefully and continue the pipeline',
+    ],
+  },
+};
+
+async function ensureSkillRulesSchema(pool) {
+  await pool.query(
+    `CREATE TABLE IF NOT EXISTS skill_rules (
+      id VARCHAR(36) PRIMARY KEY,
+      skill_id VARCHAR(100) NOT NULL,
+      rule_text TEXT NOT NULL,
+      is_default TINYINT(1) NOT NULL DEFAULT 0,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      KEY idx_skill_id (skill_id)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`
+  );
+}
+
+async function seedSkillRules(pool) {
+  const [existing] = await pool.query('SELECT COUNT(*) AS cnt FROM skill_rules');
+  if (existing[0].cnt > 0) return;
+  for (const [skillId, meta] of Object.entries(SKILL_META)) {
+    for (const rule of meta.defaultRules) {
+      await pool.query(
+        'INSERT INTO skill_rules (id, skill_id, rule_text, is_default) VALUES (?, ?, ?, 1)',
+        [uuidv4(), skillId, rule]
+      );
+    }
+  }
+}
+
+app.get('/api/skill-rules', async (_req, res) => {
+  const base = Object.fromEntries(
+    Object.entries(SKILL_META).map(([id, meta]) => [id, { description: meta.description, tools: meta.tools, rules: [] }])
+  );
+  if (!dbPool) return res.json({ skills: base });
+  try {
+    const [rows] = await dbPool.query(
+      'SELECT id, skill_id, rule_text, is_default FROM skill_rules ORDER BY is_default DESC, created_at ASC'
+    );
+    for (const row of rows) {
+      if (base[row.skill_id]) {
+        base[row.skill_id].rules.push({ id: row.id, text: row.rule_text, isDefault: !!row.is_default });
+      }
+    }
+    res.json({ skills: base });
+  } catch (e) {
+    console.error('[skill-rules] GET failed:', e.message);
+    res.json({ skills: base });
+  }
+});
+
+app.post('/api/skill-rules/:skillId/rules', async (req, res) => {
+  const session = await requireSession(req, res);
+  if (!session) return;
+  if (!dbPool) return res.status(503).json({ error: 'Database unavailable' });
+
+  const { skillId } = req.params;
+  if (!SKILL_META[skillId]) return res.status(400).json({ error: 'Unknown skill' });
+
+  const { ruleText } = req.body;
+  if (!ruleText || typeof ruleText !== 'string' || !ruleText.trim()) {
+    return res.status(400).json({ error: 'ruleText required' });
+  }
+
+  const id = uuidv4();
+  try {
+    await dbPool.query(
+      'INSERT INTO skill_rules (id, skill_id, rule_text, is_default) VALUES (?, ?, ?, 0)',
+      [id, skillId, ruleText.trim()]
+    );
+    res.json({ id, skillId, text: ruleText.trim(), isDefault: false });
+  } catch (e) {
+    console.error('[skill-rules] POST failed:', e.message);
+    res.status(500).json({ error: 'Failed to add rule' });
+  }
+});
+
+app.delete('/api/skill-rules/:skillId/rules/:ruleId', async (req, res) => {
+  const session = await requireSession(req, res);
+  if (!session) return;
+  if (!dbPool) return res.status(503).json({ error: 'Database unavailable' });
+
+  const { skillId, ruleId } = req.params;
+  try {
+    await dbPool.query(
+      'DELETE FROM skill_rules WHERE id = ? AND skill_id = ?',
+      [ruleId, skillId]
+    );
+    res.json({ ok: true });
+  } catch (e) {
+    console.error('[skill-rules] DELETE failed:', e.message);
+    res.status(500).json({ error: 'Failed to delete rule' });
+  }
+});
+
+// ── User settings (onboarding state, preferences) ────────────────────────────
+
+async function ensureUserSettingsSchema(pool) {
+  await pool.query(
+    `CREATE TABLE IF NOT EXISTS user_settings (
+      user_id VARCHAR(255) PRIMARY KEY,
+      onboarding_completed_at TIMESTAMP NULL,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`
+  );
+}
+
+app.get('/api/user-settings', async (req, res) => {
+  const session = await requireSession(req, res);
+  if (!session) return;
+  if (!dbPool) return res.json({ onboardingCompleted: false });
+  try {
+    const [rows] = await dbPool.query(
+      'SELECT onboarding_completed_at FROM user_settings WHERE user_id = ?',
+      [session.email]
+    );
+    res.json({ onboardingCompleted: rows.length > 0 && rows[0].onboarding_completed_at != null });
+  } catch (e) {
+    console.error('[user-settings] GET failed:', e.message);
+    res.json({ onboardingCompleted: false });
+  }
+});
+
+app.post('/api/user-settings/onboarding-complete', async (req, res) => {
+  const session = await requireSession(req, res);
+  if (!session) return;
+  if (!dbPool) return res.json({ ok: true });
+  try {
+    await dbPool.query(
+      `INSERT INTO user_settings (user_id, onboarding_completed_at) VALUES (?, NOW())
+       ON DUPLICATE KEY UPDATE onboarding_completed_at = NOW()`,
+      [session.email]
+    );
+    res.json({ ok: true });
+  } catch (e) {
+    console.error('[user-settings] POST failed:', e.message);
+    res.status(500).json({ error: 'Failed to save settings' });
+  }
+});
+
+// ── Agent feature pipelines ───────────────────────────────────────────────────
+// Persists which agents (and in what order) handle each app feature.
+
+async function ensureAgentPipelineSchema(pool) {
+  await pool.query(
+    `CREATE TABLE IF NOT EXISTS agent_feature_pipelines (
+      id VARCHAR(36) PRIMARY KEY,
+      feature_key VARCHAR(100) NOT NULL,
+      name VARCHAR(255) NOT NULL,
+      UNIQUE KEY unique_fk (feature_key)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`
+  );
+  await pool.query(
+    `CREATE TABLE IF NOT EXISTS agent_pipeline_steps (
+      id VARCHAR(36) PRIMARY KEY,
+      pipeline_id VARCHAR(36) NOT NULL,
+      agent_id VARCHAR(100) NOT NULL,
+      position INT NOT NULL,
+      KEY idx_pipeline (pipeline_id)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`
+  );
+}
+
+async function loadPipelines(pool) {
+  const [pipes] = await pool.query(
+    'SELECT id, feature_key, name FROM agent_feature_pipelines'
+  );
+  const [steps] = await pool.query(
+    'SELECT pipeline_id, agent_id, position FROM agent_pipeline_steps ORDER BY position ASC'
+  );
+  const stepsByPipe = {};
+  for (const s of steps) {
+    (stepsByPipe[s.pipeline_id] = stepsByPipe[s.pipeline_id] || []).push(s);
+  }
+  return pipes.map((p) => ({
+    featureKey: p.feature_key,
+    name: p.name,
+    agentIds: (stepsByPipe[p.id] || []).map((s) => s.agent_id),
+  }));
+}
+
+app.get('/api/agent-pipelines', async (_req, res) => {
+  if (!dbPool) return res.json({ pipelines: [] });
+  try {
+    res.json({ pipelines: await loadPipelines(dbPool) });
+  } catch (e) {
+    console.error('[agent-pipelines] GET failed:', e.message);
+    // Return empty list so the UI falls back to feature defaults gracefully
+    res.json({ pipelines: [] });
+  }
+});
+
+app.put('/api/agent-pipelines/:featureKey', async (req, res) => {
+  const session = await requireAdmin(req, res);
+  if (!session) return;
+  if (!dbPool) return res.status(503).json({ error: 'Database unavailable' });
+
+  const { featureKey } = req.params;
+  const { name, agentIds } = req.body;
+
+  if (!name || typeof name !== 'string') return res.status(400).json({ error: 'name required' });
+  if (!Array.isArray(agentIds)) return res.status(400).json({ error: 'agentIds array required' });
+
+  // Validate all agentIds exist in registry
+  const allAgentIds = [AGENT_REGISTRY.orchestrator.id, ...AGENT_REGISTRY.departments.map((d) => d.id)];
+  const invalid = agentIds.filter((id) => !allAgentIds.includes(id));
+  if (invalid.length) return res.status(400).json({ error: `Unknown agent ids: ${invalid.join(', ')}` });
+
+  try {
+    // Upsert pipeline row
+    const pipelineId = uuidv4();
+    await dbPool.query(
+      `INSERT INTO agent_feature_pipelines (id, feature_key, name)
+       VALUES (?, ?, ?)
+       ON DUPLICATE KEY UPDATE id=LAST_INSERT_ID(id), name=VALUES(name)`,
+      [pipelineId, featureKey, name]
+    );
+    const [[{ resolvedId }]] = await dbPool.query(
+      'SELECT id AS resolvedId FROM agent_feature_pipelines WHERE feature_key = ?',
+      [featureKey]
+    );
+    // Replace steps atomically
+    await dbPool.query('DELETE FROM agent_pipeline_steps WHERE pipeline_id = ?', [resolvedId]);
+    for (let i = 0; i < agentIds.length; i++) {
+      await dbPool.query(
+        'INSERT INTO agent_pipeline_steps (id, pipeline_id, agent_id, position) VALUES (?, ?, ?, ?)',
+        [uuidv4(), resolvedId, agentIds[i], i]
+      );
+    }
+    res.json({ ok: true, featureKey, agentIds });
+  } catch (e) {
+    console.error('[agent-pipelines] PUT failed:', e.message);
+    res.status(500).json({ error: 'Failed to save pipeline' });
+  }
+});
+
+// Serve the built React SPA in production. API routes above take priority;
+// anything unmatched falls through to the static dir, then index.html (SPA routing).
+const distDir = new URL('../dist', import.meta.url).pathname;
+app.use(express.static(distDir));
+app.get('/{*splat}', (_req, res) => {
+  res.sendFile(new URL('../dist/index.html', import.meta.url).pathname);
+});
+
 app.listen(PORT, () => {
   if (dbPool) {
     // Core app schema (users, sessions, gmail_accounts, …) then flags/roles.
     // Both idempotent; runs every boot so the DB can't be half-migrated.
     ensureCoreSchema(dbPool)
       .then(() => initFlagSchema())
+      .then(() => ensureAgentPipelineSchema(dbPool))
+      .then(() => ensureSkillRulesSchema(dbPool))
+      .then(() => seedSkillRules(dbPool))
+      .then(() => ensureUserSettingsSchema(dbPool))
+      .then(() => ensureSlackTokensSchema(dbPool))
       .then(() => loadSessionsFromDb())
+      .then(() => loadSlackAccount(dbPool))
       .catch((e) => console.error(`[DB] Schema init failed: ${e.message}`));
   }
   console.log(`Relay API listening on http://localhost:${PORT}`);

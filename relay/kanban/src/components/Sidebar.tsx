@@ -2,7 +2,7 @@ import { USERS } from '../users'
 import type { User } from '../types'
 import { useSession } from '../session'
 
-type View = 'board' | 'projects' | 'settings'
+type View = 'board' | 'projects' | 'process-manager' | 'settings'
 
 interface SidebarProps {
   currentView: View
@@ -32,6 +32,11 @@ export function Sidebar({ currentView, onNavigate, currentUser }: SidebarProps) 
           active={currentView === 'projects'}
           label="Projects"
           onClick={() => onNavigate('projects')}
+        />
+        <SidebarButton
+          active={currentView === 'process-manager'}
+          label="Process Manager"
+          onClick={() => onNavigate('process-manager')}
         />
         <SidebarButton
           active={currentView === 'settings'}

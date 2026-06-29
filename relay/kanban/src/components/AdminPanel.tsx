@@ -12,9 +12,13 @@ import {
   type FlagDefinition,
   type Role,
 } from '../flagsApi'
+import { SkillProfilesManager } from './SkillProfilesManager'
+
+type AdminTab = 'users' | 'skill-profiles'
 
 export function AdminPanel() {
   const { sessionId } = useSession()
+  const [adminTab, setAdminTab] = useState<AdminTab>('users')
   const [flags, setFlags] = useState<FlagDefinition[]>([])
   const [roles, setRoles] = useState<Role[]>([])
   const [users, setUsers] = useState<AdminUser[]>([])
@@ -85,6 +89,29 @@ export function AdminPanel() {
   return (
     <div style={{ display: 'grid', gap: 12 }}>
       {error ? <div style={{ color: '#b91c1c', fontSize: 13 }}>{error}</div> : null}
+
+      <div style={{ display: 'flex', gap: 8, borderBottom: '1px solid #e2e8f0', paddingBottom: 8 }}>
+        <button
+          type="button"
+          className={adminTab === 'users' ? 'btn btn-primary' : 'btn btn-ghost'}
+          onClick={() => setAdminTab('users')}
+        >
+          Users &amp; flags
+        </button>
+        <button
+          type="button"
+          className={adminTab === 'skill-profiles' ? 'btn btn-primary' : 'btn btn-ghost'}
+          onClick={() => setAdminTab('skill-profiles')}
+        >
+          Skill profiles
+        </button>
+      </div>
+
+      {adminTab === 'skill-profiles' ? (
+        <SkillProfilesManager users={users} />
+      ) : null}
+
+      {adminTab !== 'users' ? null : <>
 
       {/* Flags */}
       <section className="panel" style={{ padding: 12 }}>
@@ -211,6 +238,8 @@ export function AdminPanel() {
           ) : null}
         </div>
       </section>
+
+      </>}
     </div>
   )
 }

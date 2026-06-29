@@ -2,6 +2,7 @@ import { useMemo } from 'react'
 import type { Card, Project, User } from '../types'
 import type { useBoard } from '../store'
 import type { useApprovals } from '../approvalsStore'
+import type { useEmailGroups } from '../emailGroupsStore'
 import { USERS } from '../users'
 import { ColumnView } from '../components/ColumnView'
 import { CardModal } from '../components/CardModal'
@@ -11,6 +12,7 @@ interface HomePageProps {
   boardStore: ReturnType<typeof useBoard>
   projects: Project[]
   approvalsStore: ReturnType<typeof useApprovals>
+  emailGroupsStore: ReturnType<typeof useEmailGroups>
   currentUser: User
   activeCard: Card | null
   onOpenCard: (id: string) => void
@@ -28,6 +30,7 @@ export function HomePage({
   boardStore,
   projects,
   approvalsStore,
+  emailGroupsStore,
   currentUser,
   activeCard,
   onOpenCard,
@@ -115,6 +118,7 @@ export function HomePage({
           sessionId={sessionId}
           voiceInstructions={voiceInstructions}
           onDeleteCard={deleteCard}
+          emailGroupsStore={emailGroupsStore}
           onLogApproval={(message, externalRef) => {
             approvalsStore.addEntry({
               userId: currentUser.id,

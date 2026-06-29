@@ -6,6 +6,7 @@ import { useProjects } from './projectsStore'
 import { useSkills } from './skillsStore'
 import { useApprovals } from './approvalsStore'
 import { useAgents } from './agentsStore'
+import { useEmailGroups } from './emailGroupsStore'
 import { pollNewEmails, pollSlackMessages } from './integrationsApi'
 import { runEmailPipeline } from './emailSkill'
 import { runSlackPipeline } from './slackSkill'
@@ -15,6 +16,9 @@ import { HomePage } from './pages/HomePage'
 import { ProjectsPage } from './pages/ProjectsPage'
 import { SettingsPage } from './pages/SettingsPage'
 import { LoginPage } from './pages/LoginPage'
+import { ProcessManagerPage } from './pages/ProcessManagerPage'
+import { OnboardingPage } from './pages/OnboardingPage'
+import { apiFetch } from './apiClient'
 import type { Card, Priority, AgentFilter, FilterOperator } from './types'
 
 function applyOp(text: string, op: FilterOperator, val: string): boolean {
@@ -53,7 +57,7 @@ function applyEmailFilters(email: EmailForFilter, filters: AgentFilter[]): 'skip
   return null;
 }
 
-type View = 'board' | 'projects' | 'settings'
+type View = 'board' | 'projects' | 'process-manager' | 'settings'
 
 interface IncomingEmail {
   subject: string
@@ -106,6 +110,7 @@ function AuthenticatedShell() {
   const skillsStore = useSkills()
   const approvalsStore = useApprovals()
   const agentsStore = useAgents()
+  const emailGroupsStore = useEmailGroups()
 
   const { addCard, updateCard, addSubtask } = boardStore
 
@@ -115,6 +120,13 @@ function AuthenticatedShell() {
   useEffect(() => {
     skillsRef.current = customSkills
   }, [customSkills])
+
+  // Current ignore rules, read without re-subscribing the poller.
+  const { rules } = emailGroupsStore
+  const rulesRef = useRef(rules)
+  useEffect(() => {
+    rulesRef.current = rules
+  }, [rules])
 
   // Latest board, read in the poller without re-subscribing it (for dedup).
   const boardRef = useRef(boardStore.board)
@@ -162,7 +174,15 @@ function AuthenticatedShell() {
       const emailSkills = skillsRef.current.filter(
         (s) => s.category === 'email' && s.enabled
       )
-      const { summary, todoTitles, skillsApplied } = runEmailPipeline(emailThread, emailSkills)
+      const { summary, todoTitles, skillsApplied, ignored } = runEmailPipeline(
+        emailThread,
+        emailSkills,
+        rulesRef.current
+      )
+      if (ignored) {
+        updateCard(cardId, { completed: true, skillsApplied })
+        return cardId
+      }
       updateCard(cardId, { summary, todosExtracted: true, skillsApplied })
       todoTitles.forEach((title) => addSubtask(cardId, title))
       return cardId
@@ -291,11 +311,12 @@ function AuthenticatedShell() {
             boardStore={boardStore}
             projects={projectsStore.projects}
             approvalsStore={approvalsStore}
+            emailGroupsStore={emailGroupsStore}
             currentUser={currentUser}
             activeCard={activeCard}
             onOpenCard={setActiveCardId}
             onCloseCard={() => setActiveCardId(null)}
-            onSimulateEmail={() => ingestEmailCard(SAMPLE_EMAIL)}
+            onSimulateEmail={() => setActiveCardId(ingestEmailCard(SAMPLE_EMAIL))}
             onSimulateSlack={() => ingestSlackCard(SAMPLE_SLACK)}
             onPullInbox={pullInbox}
             pollStatus={pollStatus}
@@ -310,6 +331,9 @@ function AuthenticatedShell() {
             boardStore={boardStore}
             onOpenCard={setActiveCardId}
           />
+        ) : null}
+        {view === 'process-manager' ? (
+          <ProcessManagerPage />
         ) : null}
         {view === 'settings' ? (
           <SettingsPage
@@ -326,10 +350,29 @@ function AuthenticatedShell() {
 }
 
 function AppShell() {
-  const { authenticated } = useSession()
+  const { authenticated, sessionId } = useSession()
+  const [onboardingDone, setOnboardingDone] = useState<boolean | null>(null)
 
-  if (!authenticated) {
-    return <LoginPage />
+  useEffect(() => {
+    if (!authenticated || !sessionId) { setOnboardingDone(null); return }
+    apiFetch(`/api/user-settings?sessionId=${encodeURIComponent(sessionId)}`)
+      .then((r) => r.json() as Promise<{ onboardingCompleted: boolean }>)
+      .then((data) => setOnboardingDone(data.onboardingCompleted))
+      .catch(() => setOnboardingDone(true))
+  }, [authenticated, sessionId])
+
+  if (!authenticated) return <LoginPage />
+
+  if (onboardingDone === null) {
+    return (
+      <div style={{ display: 'flex', height: '100vh', alignItems: 'center', justifyContent: 'center', color: '#94a3b8', fontSize: 14 }}>
+        Loading…
+      </div>
+    )
+  }
+
+  if (!onboardingDone) {
+    return <OnboardingPage onComplete={() => setOnboardingDone(true)} />
   }
 
   return <AuthenticatedShell />

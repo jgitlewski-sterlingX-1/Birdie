@@ -1,8 +1,34 @@
 import { useEffect, useMemo, useState } from 'react'
-import type { Card, Project, User } from '../types'
+import type { Card, Project, User, RuleConditionField } from '../types'
 import { simulateCreateDraft } from '../gmail'
 import { generateDraft } from '../draftApi'
 import { useFlags } from '../flags'
+import type { useEmailGroups } from '../emailGroupsStore'
+import { GROUP_COLORS } from '../emailGroupsStore'
+
+// Parse "Display Name <email@addr>" or bare "email@addr"
+function parseEmailHeader(raw: string): { email: string; displayName?: string } {
+  const match = raw.match(/^(.*?)\s*<([^>]+)>\s*$/)
+  if (match) {
+    const name = match[1].trim().replace(/^["']|["']$/g, '')
+    return { email: match[2].trim().toLowerCase(), displayName: name || undefined }
+  }
+  return { email: raw.trim().toLowerCase() }
+}
+
+// Collect all unique addresses from a gmail card's thread + replyMeta
+function extractParticipants(card: Card) {
+  const seen = new Set<string>()
+  const result: Array<{ email: string; displayName?: string }> = []
+  const add = (raw: string) => {
+    if (!raw) return
+    const p = parseEmailHeader(raw)
+    if (!seen.has(p.email)) { seen.add(p.email); result.push(p) }
+  }
+  card.emailThread?.forEach((msg) => add(msg.from))
+  if (card.replyMeta?.to) add(card.replyMeta.to)
+  return result
+}
 
 interface CardModalProps {
   card: Card
@@ -18,6 +44,7 @@ interface CardModalProps {
   voiceInstructions: string
   onDeleteCard: (cardId: string) => void
   onLogApproval: (message: string, externalRef?: string) => void
+  emailGroupsStore?: ReturnType<typeof useEmailGroups>
 }
 
 export function CardModal({
@@ -34,6 +61,7 @@ export function CardModal({
   voiceInstructions,
   onDeleteCard,
   onLogApproval,
+  emailGroupsStore,
 }: CardModalProps) {
   const [newTodo, setNewTodo] = useState('')
   const [draft, setDraft] = useState(card.draft ?? '')
@@ -47,6 +75,21 @@ export function CardModal({
   // Auto-draft state
   const [draftLoading, setDraftLoading] = useState(false)
   const [draftError, setDraftError] = useState<string | null>(null)
+  // Email group creation form state
+  const [showNewGroup, setShowNewGroup] = useState(false)
+  const [newGroupName, setNewGroupName] = useState('')
+  const [newGroupColor, setNewGroupColor] = useState(GROUP_COLORS[0])
+  // Email action selection (gmail cards only)
+  type EmailAction = 'delegate' | 'draft' | 'ignore' | null
+  const [emailAction, setEmailAction] = useState<EmailAction>(null)
+  // Ignore rule builder state
+  const [ruleField, setRuleField] = useState<RuleConditionField>('from')
+  const [ruleOperator, setRuleOperator] = useState<'contains' | 'equals'>('contains')
+  const [ruleValue, setRuleValue] = useState('')
+  const [ruleNote, setRuleNote] = useState('')
+  const [showRuleBuilder, setShowRuleBuilder] = useState(false)
+
+  const participants = useMemo(() => (card.source === 'gmail' ? extractParticipants(card) : []), [card])
 
   const { has } = useFlags()
 
@@ -105,6 +148,15 @@ export function CardModal({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
+  const handleCreateGroup = () => {
+    const name = newGroupName.trim()
+    if (!name || !emailGroupsStore) return
+    emailGroupsStore.addGroup(name, newGroupColor)
+    setNewGroupName('')
+    setNewGroupColor(GROUP_COLORS[0])
+    setShowNewGroup(false)
+  }
+
   const approveGmailDraft = () => {
     if (!draft.trim()) return
     const meta = card.replyMeta
@@ -156,6 +208,138 @@ export function CardModal({
             </button>
           </div>
 
+          {card.source === 'gmail' ? (
+            <section style={{ display: 'grid', gap: 8 }}>
+              <div style={{ display: 'flex', gap: 8 }}>
+                <button
+                  type="button"
+                  className={`btn ${emailAction === 'delegate' ? 'btn-primary' : 'btn-ghost'}`}
+                  onClick={() => setEmailAction(emailAction === 'delegate' ? null : 'delegate')}
+                >
+                  Delegate
+                </button>
+                <button
+                  type="button"
+                  className={`btn ${emailAction === 'draft' ? 'btn-primary' : 'btn-ghost'}`}
+                  onClick={() => setEmailAction(emailAction === 'draft' ? null : 'draft')}
+                >
+                  Write Draft
+                </button>
+                <button
+                  type="button"
+                  className={`btn ${emailAction === 'ignore' ? 'btn-primary' : 'btn-ghost'}`}
+                  style={emailAction === 'ignore' ? {} : { color: '#b91c1c' }}
+                  onClick={() => {
+                    setEmailAction(emailAction === 'ignore' ? null : 'ignore')
+                    setShowRuleBuilder(false)
+                  }}
+                >
+                  Ignore
+                </button>
+              </div>
+
+              {emailAction === 'ignore' ? (
+                <div
+                  className="panel"
+                  style={{ padding: 12, display: 'grid', gap: 10, background: '#fff7f7', borderColor: '#fecaca' }}
+                >
+                  <div style={{ fontSize: 13, color: '#7f1d1d', fontWeight: 500 }}>
+                    Ignore this email
+                  </div>
+                  <div style={{ display: 'flex', gap: 8 }}>
+                    <button
+                      type="button"
+                      className="btn btn-ghost"
+                      style={{ fontSize: 12 }}
+                      onClick={() => {
+                        onUpdateCard(card.id, { completed: true })
+                        onClose()
+                      }}
+                    >
+                      Just Ignore
+                    </button>
+                    <button
+                      type="button"
+                      className="btn btn-ghost"
+                      style={{ fontSize: 12 }}
+                      onClick={() => setShowRuleBuilder((v) => !v)}
+                    >
+                      {showRuleBuilder ? 'Hide rule builder' : '+ Add ignore rule'}
+                    </button>
+                  </div>
+
+                  {showRuleBuilder ? (
+                    <div style={{ display: 'grid', gap: 8, borderTop: '1px solid #fecaca', paddingTop: 10 }}>
+                      <span style={{ fontSize: 12, fontWeight: 600, color: '#374151' }}>
+                        Auto-ignore future emails matching this rule:
+                      </span>
+                      <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                        <select
+                          value={ruleField}
+                          onChange={(e) => setRuleField(e.target.value as RuleConditionField)}
+                          style={{ border: '1px solid #cbd5e1', borderRadius: 6, padding: '4px 6px', fontSize: 12 }}
+                        >
+                          <option value="from">From</option>
+                          <option value="domain">Domain</option>
+                          <option value="subject">Subject</option>
+                        </select>
+                        <select
+                          value={ruleOperator}
+                          onChange={(e) => setRuleOperator(e.target.value as 'contains' | 'equals')}
+                          style={{ border: '1px solid #cbd5e1', borderRadius: 6, padding: '4px 6px', fontSize: 12 }}
+                        >
+                          <option value="contains">contains</option>
+                          <option value="equals">equals</option>
+                        </select>
+                        <input
+                          value={ruleValue}
+                          onChange={(e) => setRuleValue(e.target.value)}
+                          placeholder="Value…"
+                          style={{
+                            border: '1px solid #cbd5e1',
+                            borderRadius: 6,
+                            padding: '4px 6px',
+                            fontSize: 12,
+                            flex: 1,
+                            minWidth: 120,
+                          }}
+                        />
+                      </div>
+                      <input
+                        value={ruleNote}
+                        onChange={(e) => setRuleNote(e.target.value)}
+                        placeholder="Note (optional)"
+                        style={{
+                          border: '1px solid #cbd5e1',
+                          borderRadius: 6,
+                          padding: '4px 6px',
+                          fontSize: 12,
+                        }}
+                      />
+                      <button
+                        type="button"
+                        className="btn btn-primary"
+                        style={{ fontSize: 12, justifySelf: 'start' }}
+                        disabled={!ruleValue.trim() || !emailGroupsStore}
+                        onClick={() => {
+                          if (!ruleValue.trim() || !emailGroupsStore) return
+                          emailGroupsStore.addRule(
+                            { field: ruleField, operator: ruleOperator, value: ruleValue.trim() },
+                            ruleNote.trim() || undefined
+                          )
+                          onUpdateCard(card.id, { completed: true })
+                          onClose()
+                        }}
+                      >
+                        Save Rule & Ignore
+                      </button>
+                    </div>
+                  ) : null}
+                </div>
+              ) : null}
+            </section>
+          ) : null}
+
           <label style={{ display: 'grid', gap: 6 }}>
             <span style={{ fontWeight: 600 }}>Description</span>
             <textarea
@@ -205,7 +389,7 @@ export function CardModal({
             </div>
           </section>
 
-          {card.source === 'gmail' ? (
+          {card.source === 'gmail' && (emailAction === 'draft' || !!card.draft) ? (
             <section className="panel" style={{ padding: 10, display: 'grid', gap: 8 }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                 <h3>Reply composer</h3>
@@ -243,7 +427,7 @@ export function CardModal({
         </div>
 
         <aside className="modal-aside">
-          {has('card_delegation') ? (
+          {has('card_delegation') && (card.source !== 'gmail' || emailAction === 'delegate' || !!card.delegatedAt) ? (
           <section className="panel" style={{ padding: 10, display: 'grid', gap: 8 }}>
             <h3>Delegate</h3>
             {card.delegatedAt && assignee ? (
@@ -314,6 +498,161 @@ export function CardModal({
               </div>
             )}
           </section>
+          ) : null}
+
+          {card.source === 'gmail' && emailGroupsStore && participants.length > 0 ? (
+            <section className="panel" style={{ padding: 10, display: 'grid', gap: 10 }}>
+              <h3>Participants</h3>
+              {participants.map(({ email, displayName }) => {
+                const cls = emailGroupsStore.classifications[email]
+                const group = cls?.groupId
+                  ? emailGroupsStore.groups.find((g) => g.id === cls.groupId)
+                  : null
+                return (
+                  <div key={email} style={{ display: 'grid', gap: 4 }}>
+                    <div style={{ fontSize: 12, color: '#1e293b', lineHeight: 1.4 }}>
+                      {displayName ? (
+                        <>
+                          <span style={{ fontWeight: 500 }}>{displayName}</span>{' '}
+                          <span style={{ color: '#94a3b8' }}>&lt;{email}&gt;</span>
+                        </>
+                      ) : (
+                        <span>{email}</span>
+                      )}
+                    </div>
+                    <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+                      {group ? (
+                        <span
+                          style={{
+                            background: `${group.color}22`,
+                            color: group.color,
+                            border: `1px solid ${group.color}55`,
+                            borderRadius: 4,
+                            padding: '1px 7px',
+                            fontSize: 11,
+                            fontWeight: 600,
+                          }}
+                        >
+                          {group.name}
+                        </span>
+                      ) : (
+                        <span style={{ color: '#94a3b8', fontSize: 11 }}>Unclassified</span>
+                      )}
+                      <select
+                        value={cls?.groupId ?? ''}
+                        onChange={(e) => {
+                          const val = e.target.value
+                          if (val === '__new__') {
+                            setShowNewGroup(true)
+                            return
+                          }
+                          emailGroupsStore.classify(email, displayName, val || null)
+                        }}
+                        style={{
+                          fontSize: 11,
+                          border: '1px solid #cbd5e1',
+                          borderRadius: 4,
+                          padding: '2px 4px',
+                          background: '#fff',
+                          cursor: 'pointer',
+                        }}
+                      >
+                        <option value="">Unclassified</option>
+                        {emailGroupsStore.groups.map((g) => (
+                          <option key={g.id} value={g.id}>
+                            {g.name}
+                          </option>
+                        ))}
+                        <option disabled>──────</option>
+                        <option value="__new__">+ New group…</option>
+                      </select>
+                    </div>
+                  </div>
+                )
+              })}
+
+              {showNewGroup ? (
+                <div
+                  style={{
+                    border: '1px solid #e2e8f0',
+                    borderRadius: 8,
+                    padding: 10,
+                    display: 'grid',
+                    gap: 8,
+                    background: '#f8fafc',
+                  }}
+                >
+                  <span style={{ fontSize: 12, fontWeight: 600 }}>New group</span>
+                  <input
+                    value={newGroupName}
+                    onChange={(e) => setNewGroupName(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') { e.preventDefault(); handleCreateGroup() }
+                    }}
+                    placeholder="Group name (e.g. Clients)"
+                    autoFocus
+                    style={{
+                      border: '1px solid #cbd5e1',
+                      borderRadius: 6,
+                      padding: '4px 6px',
+                      fontSize: 12,
+                    }}
+                  />
+                  <div style={{ display: 'flex', gap: 5, flexWrap: 'wrap' }}>
+                    {GROUP_COLORS.map((c) => (
+                      <button
+                        key={c}
+                        type="button"
+                        onClick={() => setNewGroupColor(c)}
+                        style={{
+                          width: 18,
+                          height: 18,
+                          borderRadius: '50%',
+                          background: c,
+                          border: newGroupColor === c ? '2px solid #1e293b' : '2px solid transparent',
+                          outline: newGroupColor === c ? `2px solid ${c}` : 'none',
+                          outlineOffset: 1,
+                          cursor: 'pointer',
+                          padding: 0,
+                        }}
+                        aria-label={`Color ${c}`}
+                      />
+                    ))}
+                  </div>
+                  <div style={{ display: 'flex', gap: 6 }}>
+                    <button
+                      type="button"
+                      className="btn btn-primary"
+                      style={{ fontSize: 12, padding: '4px 10px' }}
+                      onClick={handleCreateGroup}
+                      disabled={!newGroupName.trim()}
+                    >
+                      Create
+                    </button>
+                    <button
+                      type="button"
+                      className="btn btn-ghost"
+                      style={{ fontSize: 12, padding: '4px 10px' }}
+                      onClick={() => {
+                        setShowNewGroup(false)
+                        setNewGroupName('')
+                      }}
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <button
+                  type="button"
+                  className="btn btn-ghost"
+                  style={{ justifySelf: 'start', fontSize: 12 }}
+                  onClick={() => setShowNewGroup(true)}
+                >
+                  + New group
+                </button>
+              )}
+            </section>
           ) : null}
 
           <section className="panel" style={{ padding: 10, display: 'grid', gap: 8 }}>

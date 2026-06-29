@@ -1,6 +1,6 @@
 name: Deploy to production
 
-# Push to main → build the SPA and deploy both the SPA and the API to Cloudways.
+# Push to main → build the Docker image and deploy to Cloud Run.
 # Shipping is decoupled from releasing: code can land dark and be turned on per
 # role in the in-app feature-flag admin panel.
 
@@ -14,65 +14,52 @@ concurrency:
   group: production-deploy
   cancel-in-progress: false
 
+env:
+  GCP_PROJECT: sterlingx-relay-499618
+  GCP_REGION: us-central1
+  SERVICE_NAME: relay-api
+
 jobs:
   deploy:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write   # required for Workload Identity Federation
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Set up Node
-        uses: actions/setup-node@v4
+      # Authenticate to GCP.
+      # Option A (current): service account JSON key stored as GCP_SA_KEY secret.
+      # Option B (preferred): swap to Workload Identity Federation — set
+      #   workload_identity_provider and service_account inputs instead of credentials_json.
+      - name: Authenticate to GCP
+        uses: google-github-actions/auth@v2
         with:
-          node-version: 20
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
 
-      - name: Build SPA
+      - name: Set up gcloud
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Configure Docker for Artifact Registry
+        run: gcloud auth configure-docker ${{ env.GCP_REGION }}-docker.pkg.dev --quiet
+
+      - name: Build and push image
         working-directory: relay/kanban
         run: |
-          npm ci
-          npm run build
+          IMAGE="${{ env.GCP_REGION }}-docker.pkg.dev/${{ env.GCP_PROJECT }}/relay/${{ env.SERVICE_NAME }}:${{ github.sha }}"
+          docker build -t "$IMAGE" .
+          docker push "$IMAGE"
+          echo "IMAGE=$IMAGE" >> "$GITHUB_ENV"
 
-      # Secrets are passed via env (not inline) so the runner's shell never
-      # expands values — critical for the redeploy command, whose $HOME must
-      # expand on the SERVER, not the runner.
-      - name: Configure SSH
-        env:
-          SSH_KEY: ${{ secrets.CLOUDWAYS_SSH_KEY }}
-          DEPLOY_HOST: ${{ secrets.CLOUDWAYS_HOST }}
+      # Deploy the new image. Existing env vars / secrets on the service are
+      # preserved — only the image is updated. Secrets (MYSQL_PASSWORD,
+      # GMAIL_CLIENT_SECRET, etc.) stay in Secret Manager and are not re-set here.
+      - name: Deploy to Cloud Run
         run: |
-          if [ -z "$SSH_KEY" ] || [ -z "$DEPLOY_HOST" ]; then
-            echo "::error::Deploy secrets missing (CLOUDWAYS_SSH_KEY / CLOUDWAYS_HOST). Set them in repo Settings → Secrets." >&2
-            exit 1
-          fi
-          mkdir -p ~/.ssh
-          printf '%s\n' "$SSH_KEY" > ~/.ssh/id_deploy
-          chmod 600 ~/.ssh/id_deploy
-          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts 2>/dev/null
-
-      - name: Deploy SPA to webroot
-        # Sync the built bundle into the Cloudways webroot. Use -rlz, NOT -a:
-        # the webroot is owned by the app user (vzsqbwuspy) while the deploy user
-        # (master) is only a group member, so preserving times/perms/owner (-a)
-        # fails with "rsync: failed to set times ... Operation not permitted".
-        # -rlz transfers content + structure without those attributes. --delete
-        # prunes old hashed assets; index.php (the /api front-controller) ships
-        # inside dist/, so it is synced and preserved.
-        env:
-          DEPLOY_USER: ${{ secrets.CLOUDWAYS_USER }}
-          DEPLOY_HOST: ${{ secrets.CLOUDWAYS_HOST }}
-          DEPLOY_WEBROOT: ${{ secrets.CLOUDWAYS_WEBROOT }}
-        run: |
-          rsync -rlz --delete --exclude='.htaccess' \
-            -e "ssh -i ~/.ssh/id_deploy" \
-            relay/kanban/dist/ \
-            "$DEPLOY_USER@$DEPLOY_HOST:$DEPLOY_WEBROOT/"
-
-      - name: Redeploy API
-        # Server-side redeploy (reset API checkout to origin/main, install runtime
-        # deps, reload pm2). $HOME in the command expands on the server.
-        env:
-          DEPLOY_USER: ${{ secrets.CLOUDWAYS_USER }}
-          DEPLOY_HOST: ${{ secrets.CLOUDWAYS_HOST }}
-          REDEPLOY_CMD: ${{ secrets.CLOUDWAYS_API_REDEPLOY_CMD }}
-        run: |
-          ssh -i ~/.ssh/id_deploy "$DEPLOY_USER@$DEPLOY_HOST" "$REDEPLOY_CMD"
+          gcloud run deploy ${{ env.SERVICE_NAME }} \
+            --image "$IMAGE" \
+            --region ${{ env.GCP_REGION }} \
+            --project ${{ env.GCP_PROJECT }} \
+            --quiet

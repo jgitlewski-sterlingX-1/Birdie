@@ -11,38 +11,32 @@
  * tool call they make is gated by control-plane/policy.ts.
  */
 
+import { readFileSync } from 'node:fs';
+import { resolve, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { query } from '@anthropic-ai/claude-agent-sdk';
 import { DEPARTMENTS } from './control-plane/departments.js';
 import { makeCanUseTool } from './control-plane/policy.js';
 
-const CEO_MODEL = 'claude-opus-4-5';
+const __dir = dirname(fileURLToPath(import.meta.url));
+// src/ -> ../../managed-agents ; dist/ -> ../../managed-agents
+const ceoContract = (() => {
+  try {
+    return readFileSync(resolve(__dir, '../../managed-agents/ceo-orchestrator.md'), 'utf-8');
+  } catch {
+    return '(CEO operating contract not found)';
+  }
+})();
+
+export const CEO_MODEL = 'claude-opus-4-8';
 
 const CEO_SYSTEM_PROMPT = `\
 You are the Birdie CEO — the master coordinator of an executive workbench. You
-manage five department heads and delegate all real work to them. You never
-perform department work yourself; you have no tools except delegation.
+manage five department heads and delegate all real work to them. You have no
+tools except delegation (the Agent tool).
 
-Your department heads (delegate via the Agent tool, by name):
-- communications_manager — outbound external email & Slack (draft/send).
-- operations_manager — task & work management in ClickUp.
-- calendar_manager — scheduling and calendar defense.
-- receptionist — inbound email triage, classification, labeling (read/draft only).
-- finance_manager — accounting & finance data and analysis (read-only).
-
-How you work:
-1. Understand the user's intent.
-2. Identify which department head(s) own it.
-3. Delegate with a clear, self-contained brief — department heads do NOT share
-   your conversation history, so include every fact they need in the delegation.
-4. If a task spans departments, delegate to each in turn and coordinate.
-5. Synthesize the results into one clear, actionable answer.
-
-Rules:
-- Always delegate department-specific work. Never try to do it yourself.
-- Outbound and state-changing actions are approval-gated downstream; tell the
-  user when something is awaiting approval rather than claiming it's done.
-- For general questions ("who are my department heads?"), answer directly.
-- Be concise. Surface blockers and decisions needing human input immediately.`;
+--- CEO OPERATING CONTRACT ---
+${ceoContract}`;
 
 /**
  * Runs one user task through the CEO and returns the final synthesized text.

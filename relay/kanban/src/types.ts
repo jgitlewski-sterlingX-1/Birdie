@@ -157,3 +157,60 @@ export interface AgentConfig {
   filters: AgentFilter[];
   updatedAt: string;
 }
+
+export interface StageCondition {
+  field: 'classification';
+  operator: 'equals' | 'not_equals';
+  value: 'ACTION_NEEDED' | 'FYI' | 'NOISE';
+}
+
+export interface SkillPipelineStage {
+  id: string;
+  name: string;
+  position: number;
+  skillIds: string[];
+  condition: StageCondition | null;
+}
+
+export interface SkillProfile {
+  id: string;
+  name: string;
+  description?: string;
+  stages: SkillPipelineStage[];
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface UserSkillStatus {
+  profile: SkillProfile | null;
+  overrides: Record<string, boolean>;
+}
+
+export type RuleConditionField = 'from' | 'domain' | 'subject'
+
+export interface EmailRule {
+  id: string;
+  condition: {
+    field: RuleConditionField;
+    operator: 'contains' | 'equals';
+    value: string;
+  };
+  action: 'ignore';
+  note?: string;
+  createdAt: string;
+}
+
+export interface EmailGroup {
+  id: string;
+  name: string;
+  color: string;
+  description?: string;
+  createdAt: string;
+}
+
+export interface EmailAddressClassification {
+  email: string;
+  displayName?: string;
+  groupId: string | null;
+  updatedAt: string;
+}

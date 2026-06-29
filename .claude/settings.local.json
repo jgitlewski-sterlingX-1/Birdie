@@ -4,12 +4,10 @@
       "PowerShell($g = Get-Command git -ErrorAction SilentlyContinue; if \\($g\\) { \"INSTALLED: $\\($g.Source\\)\"; git --version } else { \"NOT INSTALLED\" })",
       "PowerShell(gh auth status)",
       "mcp__Claude_Preview__preview_start",
-      "Bash(ssh -i /c/Users/acer/.ssh/relay_cloudways -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new -l \"master_archerthegreat\" 157.245.210.137 'bash -s')",
       "Bash(cat)",
-      "Bash(ssh -i /c/Users/acer/.ssh/relay_cloudways -o IdentitiesOnly=yes -l \"master_archerthegreat\" 157.245.210.137 'bash -s')",
       "Bash(cat > *)",
       "Bash(python3 -c \"import sys,urllib.parse; print\\(urllib.parse.unquote\\(sys.stdin.read\\(\\).strip\\(\\)\\)\\)\")",
-      "Bash(curl -s \"https://phpstack-1565248-6494558.cloudwaysapps.com/api/auth/login\")",
+      "Bash(curl -s \"https://relay-api-192448251506.us-central1.run.app/api/auth/login\")",
       "Bash(curl -s \"http://localhost:8787/api/auth/login\")"
     ]
   }

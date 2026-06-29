@@ -120,6 +120,84 @@ export const CORE_TABLE_DDL = [
       updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
       PRIMARY KEY (user_id, provider)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
+
+  // Named skill bundles an admin can create and assign to users. A profile
+  // defines which base skills are active (custom Anthropic skills are always
+  // per-user and are not profiled here).
+  `CREATE TABLE IF NOT EXISTS skill_profiles (
+      id CHAR(36) PRIMARY KEY,
+      name VARCHAR(100) NOT NULL,
+      description TEXT NULL,
+      created_by CHAR(36) NULL,
+      created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
+
+  // Which base skill IDs are included in a profile. skill_id matches the
+  // hard-coded BASE_SKILLS[].id values in src/skills.ts.
+  `CREATE TABLE IF NOT EXISTS skill_profile_items (
+      profile_id CHAR(36) NOT NULL,
+      skill_id VARCHAR(100) NOT NULL,
+      PRIMARY KEY (profile_id, skill_id),
+      CONSTRAINT fk_spi_profile
+        FOREIGN KEY (profile_id) REFERENCES skill_profiles(id)
+        ON DELETE CASCADE
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
+
+  // Which profile is currently assigned to each user. One row per user;
+  // profile_id NULL means no profile assigned (all base skills active).
+  `CREATE TABLE IF NOT EXISTS user_skill_profiles (
+      user_id CHAR(36) PRIMARY KEY,
+      profile_id CHAR(36) NULL,
+      assigned_by CHAR(36) NULL,
+      assigned_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      CONSTRAINT fk_usp_user
+        FOREIGN KEY (user_id) REFERENCES users(id)
+        ON DELETE CASCADE,
+      CONSTRAINT fk_usp_profile
+        FOREIGN KEY (profile_id) REFERENCES skill_profiles(id)
+        ON DELETE SET NULL
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
+
+  // Per-user toggles that override whether a base skill is enabled. A user can
+  // turn individual base skills on or off independent of their profile.
+  `CREATE TABLE IF NOT EXISTS user_skill_overrides (
+      user_id CHAR(36) NOT NULL,
+      skill_id VARCHAR(100) NOT NULL,
+      enabled TINYINT(1) NOT NULL DEFAULT 1,
+      updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+      PRIMARY KEY (user_id, skill_id),
+      CONSTRAINT fk_uso_user
+        FOREIGN KEY (user_id) REFERENCES users(id)
+        ON DELETE CASCADE
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
+
+  // Ordered stages in a profile's skill pipeline. Each stage runs its skills
+  // sequentially in position order; skills within a stage run in parallel.
+  // condition_json is null (always run) or JSON { field, operator, value }
+  // evaluated against the output of prior stages.
+  `CREATE TABLE IF NOT EXISTS skill_pipeline_stages (
+      id CHAR(36) PRIMARY KEY,
+      profile_id CHAR(36) NOT NULL,
+      name VARCHAR(100) NOT NULL,
+      position INT NOT NULL,
+      condition_json TEXT NULL,
+      created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      INDEX idx_sps_profile_pos (profile_id, position),
+      CONSTRAINT fk_sps_profile
+        FOREIGN KEY (profile_id) REFERENCES skill_profiles(id)
+        ON DELETE CASCADE
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
+
+  // Which base skills run in each pipeline stage.
+  `CREATE TABLE IF NOT EXISTS skill_pipeline_stage_items (
+      stage_id CHAR(36) NOT NULL,
+      skill_id VARCHAR(100) NOT NULL,
+      PRIMARY KEY (stage_id, skill_id),
+      CONSTRAINT fk_spsi_stage
+        FOREIGN KEY (stage_id) REFERENCES skill_pipeline_stages(id)
+        ON DELETE CASCADE
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
 ];
 
 // Create all core tables on an existing connection/pool (already pointed at the
